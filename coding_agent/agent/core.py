@@ -1,0 +1,323 @@
+"""Core agent implementation with ReAct loop."""
+
+import json
+from pathlib import Path
+from typing import Any
+
+from jinja2 import Template
+from prompt_toolkit import PromptSession
+from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
+from prompt_toolkit.history import FileHistory
+from rich.console import Console
+from rich.live import Live
+from rich.markdown import Markdown
+from rich.panel import Panel
+from rich.spinner import Spinner
+from rich.syntax import Syntax
+
+from coding_agent.config import settings
+from coding_agent.llm.client import LLMClient
+from coding_agent.tools.registry import registry
+
+console = Console()
+
+
+class Agent:
+    """ReAct-based coding agent."""
+
+    def __init__(
+        self,
+        working_dir: str,
+        model: str | None = None,
+        debug: bool = False,
+    ):
+        self.working_dir = Path(working_dir).resolve()
+        self.model = model or settings.default_model
+        self.debug = debug
+        self.llm = LLMClient(model=self.model)
+        self.history: list[dict[str, Any]] = []
+
+        # Initialize tool context
+        self.tool_context = {
+            "working_dir": str(self.working_dir),
+            "debug": debug,
+        }
+
+        # Initialize tools
+        self._init_tools()
+
+        # Setup prompt session with history
+        settings.ensure_config_dir()
+        history_file = settings.config_dir / "cli_history"
+        self.session = PromptSession(
+            history=FileHistory(str(history_file)),
+            auto_suggest=AutoSuggestFromHistory(),
+        )
+
+    def _init_tools(self) -> None:
+        """Initialize and register all tools."""
+        # Import tools to trigger registration
+        from coding_agent.tools import file_tools, shell_tools, code_tools
+
+        if self.debug:
+            tools = registry.list_tools()
+            console.print(f"[dim]Loaded {len(tools)} tools[/dim]")
+
+    def _load_system_prompt(self) -> str:
+        """Load and render system prompt template."""
+        prompt_path = Path(__file__).parent.parent / "prompts" / "system.j2"
+
+        if prompt_path.exists():
+            template = Template(prompt_path.read_text())
+            return template.render(
+                working_dir=str(self.working_dir),
+                tools=registry.list_tools(),
+            )
+
+        # Fallback system prompt
+        return self._get_default_system_prompt()
+
+    def _get_default_system_prompt(self) -> str:
+        """Get default system prompt if template is not found."""
+        return f"""You are a helpful AI coding assistant. You are working in directory: {self.working_dir}
+
+You have access to various tools to help you complete tasks. Use them when needed.
+
+Available tools:
+"""
+
+    def _build_messages(self) -> list[dict[str, Any]]:
+        """Build message list with system prompt and history."""
+        system_prompt = self._load_system_prompt()
+        messages = [{"role": "system", "content": system_prompt}]
+        messages.extend(self.history)
+        return messages
+
+    def run_interactive(self) -> None:
+        """Run interactive chat session."""
+        while True:
+            try:
+                # Get user input with prompt_toolkit
+                user_input = self.session.prompt(
+                    [("class:prompt", "You: ")],
+                    style={"prompt": "bold green"},
+                )
+
+                if not user_input.strip():
+                    continue
+
+                if user_input.lower() in ("exit", "quit", "q"):
+                    console.print("[yellow]Goodbye![/yellow]")
+                    break
+
+                # Process the message
+                self._process_message(user_input)
+
+            except KeyboardInterrupt:
+                continue
+            except EOFError:
+                break
+
+    def _process_message(self, user_input: str) -> None:
+        """Process a single user message through the ReAct loop."""
+        self.history.append({"role": "user", "content": user_input})
+
+        max_iterations = settings.max_iterations
+
+        for iteration in range(max_iterations):
+            # Show thinking spinner
+            with Live(
+                Spinner("dots", text="Thinking..."),
+                refresh_per_second=4,
+                transient=True,
+            ):
+                import asyncio
+
+                response = asyncio.run(self.llm.chat_with_tools(self._build_messages()))
+
+            content = response.get("content", "")
+            tool_calls = response.get("tool_calls", [])
+
+            if self.debug:
+                console.print(f"[dim]Iteration {iteration + 1}: {len(tool_calls)} tool calls[/dim]")
+
+            # Handle tool calls
+            if tool_calls:
+                # Add assistant message with tool calls
+                assistant_message: dict[str, Any] = {
+                    "role": "assistant",
+                    "content": content,
+                }
+
+                # Format tool calls for the message
+                if "claude" in self.model.lower():
+                    # Anthropic format
+                    assistant_message["content"] = [
+                        {"type": "text", "text": content or ""},
+                    ]
+                    for tc in tool_calls:
+                        assistant_message["content"].append(
+                            {
+                                "type": "tool_use",
+                                "id": tc["id"],
+                                "name": tc["name"],
+                                "input": json.loads(tc["arguments"]),
+                            }
+                        )
+                else:
+                    # OpenAI format
+                    assistant_message["tool_calls"] = [
+                        {
+                            "id": tc["id"],
+                            "type": "function",
+                            "function": {
+                                "name": tc["name"],
+                                "arguments": tc["arguments"],
+                            },
+                        }
+                        for tc in tool_calls
+                    ]
+
+                self.history.append(assistant_message)
+
+                # Execute tools
+                for tool_call in tool_calls:
+                    result = self._execute_tool(tool_call)
+
+                    # Add tool response
+                    if "claude" in self.model.lower():
+                        self.history.append(
+                            {
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "tool_result",
+                                        "tool_use_id": tool_call["id"],
+                                        "content": result,
+                                    }
+                                ],
+                            }
+                        )
+                    else:
+                        self.history.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tool_call["id"],
+                                "content": result,
+                            }
+                        )
+            else:
+                # No tool calls - display the response
+                self._display_response(content)
+                self.history.append(
+                    {
+                        "role": "assistant",
+                        "content": content,
+                    }
+                )
+                break
+        else:
+            console.print("[yellow]Warning: Reached maximum iterations.[/yellow]")
+
+    def _execute_tool(self, tool_call: dict[str, Any]) -> str:
+        """Execute a tool call."""
+        tool_name = tool_call["name"]
+        tool = registry.get(tool_name)
+
+        if not tool:
+            return f"Error: Tool '{tool_name}' not found."
+
+        try:
+            args = json.loads(tool_call["arguments"])
+            # Add context to arguments
+            args["ctx"] = self.tool_context
+
+            import asyncio
+
+            result = asyncio.run(tool.execute(**args))
+
+            if self.debug:
+                console.print(f"[dim]Tool {tool_name} executed[/dim]")
+
+            # Truncate result if too long
+            max_result_len = 10000
+            if len(result) > max_result_len:
+                result = result[:max_result_len] + "\n... [truncated]"
+
+            return result
+
+        except json.JSONDecodeError as e:
+            return f"Error: Invalid tool arguments - {e}"
+        except Exception as e:
+            if self.debug:
+                raise
+            return f"Error executing tool: {e}"
+
+    def _display_response(self, content: str) -> None:
+        """Display assistant response with formatting."""
+        # Check if content contains code blocks
+        if "```" in content:
+            console.print("\n[bold blue]Agent:[/bold blue]")
+            console.print(Markdown(content))
+        else:
+            panel = Panel(
+                content,
+                title="[bold blue]Agent[/bold blue]",
+                border_style="blue",
+            )
+            console.print(panel)
+
+    def run_once(self, prompt: str) -> str:
+        """Execute a single prompt and return the result."""
+        self.history.append({"role": "user", "content": prompt})
+
+        import asyncio
+
+        response = asyncio.run(self.llm.chat_with_tools(self._build_messages()))
+
+        content = response.get("content", "")
+        tool_calls = response.get("tool_calls", [])
+
+        max_iterations = settings.max_iterations
+        iteration = 0
+
+        while tool_calls and iteration < max_iterations:
+            iteration += 1
+
+            # Add assistant message
+            assistant_message: dict[str, Any] = {
+                "role": "assistant",
+                "content": content,
+                "tool_calls": [
+                    {
+                        "id": tc["id"],
+                        "type": "function",
+                        "function": {
+                            "name": tc["name"],
+                            "arguments": tc["arguments"],
+                        },
+                    }
+                    for tc in tool_calls
+                ],
+            }
+            self.history.append(assistant_message)
+
+            # Execute tools
+            for tool_call in tool_calls:
+                result = self._execute_tool(tool_call)
+                self.history.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call["id"],
+                        "content": result,
+                    }
+                )
+
+            # Get next response
+            response = asyncio.run(self.llm.chat_with_tools(self._build_messages()))
+            content = response.get("content", "")
+            tool_calls = response.get("tool_calls", [])
+
+        # Final response
+        self.history.append({"role": "assistant", "content": content})
+        return content
