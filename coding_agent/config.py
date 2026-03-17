@@ -1,7 +1,6 @@
 """Configuration management using Pydantic Settings."""
 
 from pathlib import Path
-from typing import List
 
 from platformdirs import user_config_dir
 from pydantic import Field, field_validator
@@ -30,7 +29,7 @@ class Settings(BaseSettings):
     max_iterations: int = Field(default=50, ge=1, le=1000)
 
     # Safety settings
-    allowed_shell_commands: List[str] = Field(
+    allowed_shell_commands: list[str] = Field(
         default_factory=lambda: ["git", "python", "pytest", "ls", "cat", "echo", "find", "grep"]
     )
     max_file_size: int = Field(default=1024 * 1024, ge=1024)  # 1MB default
@@ -40,7 +39,7 @@ class Settings(BaseSettings):
 
     @field_validator("allowed_shell_commands", mode="before")
     @classmethod
-    def parse_shell_commands(cls, v: str | List[str]) -> List[str]:
+    def parse_shell_commands(cls, v: str | list[str]) -> list[str]:
         """Parse comma-separated shell commands."""
         if isinstance(v, str):
             return [cmd.strip() for cmd in v.split(",") if cmd.strip()]

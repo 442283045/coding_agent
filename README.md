@@ -62,6 +62,9 @@ coding-agent chat /path/to/project
 
 # Use specific model
 coding-agent chat -m gpt-4o
+
+# Print detailed LLM request/response logs
+coding-agent chat --debug
 ```
 
 ### Single command mode

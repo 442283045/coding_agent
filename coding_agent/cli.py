@@ -1,15 +1,15 @@
 """CLI entry point using Typer."""
 
 from pathlib import Path
-from typing import Optional
+from typing import Annotated
 
 import typer
 from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
 
-from coding_agent.config import settings
 from coding_agent.agent.core import Agent
+from coding_agent.config import settings
 
 app = typer.Typer(
     help="AI-powered CLI coding agent",
@@ -17,60 +17,85 @@ app = typer.Typer(
     rich_markup_mode="rich",
 )
 console = Console()
+DEFAULT_WORKING_DIR = Path(".")
+DEFAULT_MODEL = settings.default_model
+DEFAULT_DEBUG = settings.debug
 
 
 def version_callback(value: bool) -> None:
     """Show version and exit."""
     if value:
         from coding_agent import __version__
+
         console.print(f"[bold blue]coding-agent[/bold blue] version {__version__}")
         raise typer.Exit()
 
 
-@app.callback()
-def main(
-    version: Optional[bool] = typer.Option(
-        None, "--version", "-v", callback=version_callback, is_eager=True
-    ),
-) -> None:
-    """Coding Agent - AI-powered CLI coding assistant."""
-    pass
-
-
-@app.command()
-def chat(
-    path: Path = typer.Argument(
-        default=".",
+VersionOption = Annotated[
+    bool | None,
+    typer.Option("--version", "-v", callback=version_callback, is_eager=True),
+]
+ChatPathArgument = Annotated[
+    Path,
+    typer.Argument(
         help="Working directory for the agent",
         exists=True,
         file_okay=False,
         dir_okay=True,
         resolve_path=True,
     ),
-    model: str = typer.Option(
-        settings.default_model,
-        "--model",
-        "-m",
-        help="LLM model to use",
+]
+RunPromptArgument = Annotated[
+    str,
+    typer.Argument(help="The task to execute"),
+]
+RunPathOption = Annotated[
+    Path,
+    typer.Option(
+        "--path",
+        "-p",
+        help="Working directory",
+        exists=True,
+        file_okay=False,
+        dir_okay=True,
+        resolve_path=True,
     ),
-    debug: bool = typer.Option(
-        settings.debug,
-        "--debug",
-        "-d",
-        help="Enable debug mode",
-    ),
+]
+ModelOption = Annotated[
+    str,
+    typer.Option("--model", "-m", help="LLM model to use"),
+]
+DebugOption = Annotated[
+    bool,
+    typer.Option("--debug", "-d", help="Enable debug mode"),
+]
+
+
+@app.callback()
+def main(version: VersionOption = None) -> None:
+    """Coding Agent - AI-powered CLI coding assistant."""
+    pass
+
+
+@app.command()
+def chat(
+    path: ChatPathArgument = DEFAULT_WORKING_DIR,
+    model: ModelOption = DEFAULT_MODEL,
+    debug: DebugOption = DEFAULT_DEBUG,
 ) -> None:
     """Start an interactive coding session."""
     # Show welcome banner
-    title = Text("🤖 Coding Agent", style="bold blue")
+    title = Text("Coding Agent", style="bold blue")
     subtitle = Text(f"Model: {model} | Directory: {path}", style="dim")
-    
-    console.print(Panel(
-        subtitle,
-        title=title,
-        border_style="blue",
-        padding=(1, 2),
-    ))
+
+    console.print(
+        Panel(
+            subtitle,
+            title=title,
+            border_style="blue",
+            padding=(1, 2),
+        )
+    )
     console.print()
 
     # Initialize and run agent
@@ -87,37 +112,15 @@ def chat(
         console.print(f"\n[red]Error: {e}[/red]")
         if debug:
             raise
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
 
 @app.command()
 def run(
-    prompt: str = typer.Argument(
-        ...,
-        help="The task to execute",
-    ),
-    path: Path = typer.Option(
-        ".",
-        "--path",
-        "-p",
-        help="Working directory",
-        exists=True,
-        file_okay=False,
-        dir_okay=True,
-        resolve_path=True,
-    ),
-    model: str = typer.Option(
-        settings.default_model,
-        "--model",
-        "-m",
-        help="LLM model to use",
-    ),
-    debug: bool = typer.Option(
-        settings.debug,
-        "--debug",
-        "-d",
-        help="Enable debug mode",
-    ),
+    prompt: RunPromptArgument = ...,
+    path: RunPathOption = DEFAULT_WORKING_DIR,
+    model: ModelOption = DEFAULT_MODEL,
+    debug: DebugOption = DEFAULT_DEBUG,
 ) -> None:
     """Execute a single task and exit."""
     try:
@@ -132,7 +135,7 @@ def run(
         console.print(f"[red]Error: {e}[/red]")
         if debug:
             raise
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
 
 @app.command()

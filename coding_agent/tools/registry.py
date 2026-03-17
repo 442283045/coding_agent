@@ -1,7 +1,8 @@
 """Tool registry for managing agent tools."""
 
 import inspect
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -61,8 +62,7 @@ class Tool:
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    p.name: {"type": p.type, "description": p.description}
-                    for p in self.parameters
+                    p.name: {"type": p.type, "description": p.description} for p in self.parameters
                 },
                 "required": [p.name for p in self.parameters if p.required],
             },
@@ -79,7 +79,7 @@ def get_type_schema(annotation: Any) -> str:
         list: "array",
         dict: "object",
     }
-    
+
     # Handle Optional types
     origin = getattr(annotation, "__origin__", None)
     if origin is not None:
@@ -93,7 +93,7 @@ def get_type_schema(annotation: Any) -> str:
             for arg in args:
                 if arg is not type(None):
                     return get_type_schema(arg)
-    
+
     return type_map.get(annotation, "string")
 
 
@@ -129,29 +129,33 @@ class ToolRegistry:
         description: str,
     ) -> Callable[[Callable[..., Awaitable[Any]]], Callable[..., Awaitable[Any]]]:
         """Decorator to register a function as a tool."""
+
         def decorator(func: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
             sig = inspect.signature(func)
             params: list[ToolParameter] = []
-            
+
             for param_name, param in sig.parameters.items():
                 # Skip 'ctx' parameter (injected context)
                 if param_name == "ctx":
                     continue
-                    
+
                 param_type = get_type_schema(param.annotation)
                 is_required = param.default is inspect.Parameter.empty
                 default_desc = f" (default: {param.default})" if not is_required else ""
-                
-                params.append(ToolParameter(
-                    name=param_name,
-                    type=param_type,
-                    description=f"Parameter {param_name}{default_desc}",
-                    required=is_required,
-                ))
+
+                params.append(
+                    ToolParameter(
+                        name=param_name,
+                        type=param_type,
+                        description=f"Parameter {param_name}{default_desc}",
+                        required=is_required,
+                    )
+                )
 
             tool = Tool(name, description, func, params)
             self.register(tool)
             return func
+
         return decorator
 
 

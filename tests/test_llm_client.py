@@ -1,0 +1,107 @@
+"""Tests for LLM client request/response logging."""
+
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+
+from coding_agent.llm.client import LLMClient
+
+
+def _build_response(
+    *,
+    content: str,
+    finish_reason: str = "stop",
+    tool_calls: list[Any] | None = None,
+) -> SimpleNamespace:
+    """Create a LiteLLM-like response object for tests."""
+    return SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                finish_reason=finish_reason,
+                message=SimpleNamespace(content=content, tool_calls=tool_calls or []),
+            )
+        ]
+    )
+
+
+@pytest.mark.asyncio
+async def test_chat_with_tools_logs_formatted_request_and_response(monkeypatch) -> None:
+    """Debug mode should print formatted LLM request and response logs."""
+    printed: list[str] = []
+
+    def capture_print(*args: object, **kwargs: object) -> None:
+        printed.append(" ".join(str(arg) for arg in args))
+
+    async def fake_acompletion(**kwargs: Any) -> Any:
+        return _build_response(
+            content="Hello from the model",
+            tool_calls=[
+                SimpleNamespace(
+                    id="tool-1",
+                    function=SimpleNamespace(
+                        name="read_file",
+                        arguments='{"path": "README.md"}',
+                    ),
+                )
+            ],
+        )
+
+    monkeypatch.setattr("coding_agent.llm.client.console.print", capture_print)
+    monkeypatch.setattr("coding_agent.llm.client.litellm.acompletion", fake_acompletion)
+    monkeypatch.setattr(
+        LLMClient,
+        "_get_tools_format",
+        lambda self: [
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "description": "Read a file",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ],
+    )
+
+    client = LLMClient(model="gpt-4o-mini", debug=True)
+
+    first = await client.chat_with_tools([{"role": "user", "content": "你好"}])
+    second = await client.chat_with_tools([{"role": "user", "content": "再说一次"}])
+
+    output = "\n".join(printed)
+
+    assert first["content"] == "Hello from the model"
+    assert second["tool_calls"][0]["name"] == "read_file"
+    assert output.count("Agent Run Log - ") == 1
+    assert "[1] REQUEST" in output
+    assert "[2] RESPONSE" in output
+    assert "[3] REQUEST" in output
+    assert "[4] RESPONSE" in output
+    assert '"content": "你好"' in output
+    assert '"content": "再说一次"' in output
+    assert '"tools": [' in output
+    assert '"read_file"' in output
+    assert '"finish_reason": "stop"' in output
+    assert '"name": "read_file"' in output
+
+
+@pytest.mark.asyncio
+async def test_chat_with_tools_skips_llm_logs_without_debug(monkeypatch) -> None:
+    """Non-debug mode should not print formatted LLM logs."""
+    printed: list[str] = []
+
+    async def fake_acompletion(**kwargs: Any) -> Any:
+        return _build_response(content="quiet")
+
+    monkeypatch.setattr(
+        "coding_agent.llm.client.console.print",
+        lambda *args, **kwargs: printed.append(" ".join(str(arg) for arg in args)),
+    )
+    monkeypatch.setattr("coding_agent.llm.client.litellm.acompletion", fake_acompletion)
+
+    client = LLMClient(model="gpt-4o-mini", debug=False)
+    result = await client.chat_with_tools([{"role": "user", "content": "hello"}])
+
+    assert result["content"] == "quiet"
+    assert printed == []

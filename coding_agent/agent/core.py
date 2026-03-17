@@ -8,18 +8,19 @@ from jinja2 import Template
 from prompt_toolkit import PromptSession
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.history import FileHistory
+from prompt_toolkit.styles import Style
 from rich.console import Console
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.spinner import Spinner
-from rich.syntax import Syntax
 
 from coding_agent.config import settings
 from coding_agent.llm.client import LLMClient
 from coding_agent.tools.registry import registry
 
 console = Console()
+PROMPT_STYLE = Style.from_dict({"prompt": "bold green"})
 
 
 class Agent:
@@ -34,7 +35,7 @@ class Agent:
         self.working_dir = Path(working_dir).resolve()
         self.model = model or settings.default_model
         self.debug = debug
-        self.llm = LLMClient(model=self.model)
+        self.llm = LLMClient(model=self.model, debug=debug)
         self.history: list[dict[str, Any]] = []
 
         # Initialize tool context
@@ -49,7 +50,7 @@ class Agent:
         # Setup prompt session with history
         settings.ensure_config_dir()
         history_file = settings.config_dir / "cli_history"
-        self.session = PromptSession(
+        self.session: PromptSession[str] = PromptSession(
             history=FileHistory(str(history_file)),
             auto_suggest=AutoSuggestFromHistory(),
         )
@@ -57,7 +58,9 @@ class Agent:
     def _init_tools(self) -> None:
         """Initialize and register all tools."""
         # Import tools to trigger registration
-        from coding_agent.tools import file_tools, shell_tools, code_tools
+        from coding_agent.tools import code_tools, file_tools, shell_tools
+
+        _ = (code_tools, file_tools, shell_tools)
 
         if self.debug:
             tools = registry.list_tools()
@@ -79,12 +82,13 @@ class Agent:
 
     def _get_default_system_prompt(self) -> str:
         """Get default system prompt if template is not found."""
-        return f"""You are a helpful AI coding assistant. You are working in directory: {self.working_dir}
-
-You have access to various tools to help you complete tasks. Use them when needed.
-
-Available tools:
-"""
+        return (
+            "You are a helpful AI coding assistant. You are working in directory: "
+            f"{self.working_dir}\n\n"
+            "You have access to various tools to help you complete tasks. Use them when "
+            "needed.\n\n"
+            "Available tools:\n"
+        )
 
     def _build_messages(self) -> list[dict[str, Any]]:
         """Build message list with system prompt and history."""
@@ -100,7 +104,7 @@ Available tools:
                 # Get user input with prompt_toolkit
                 user_input = self.session.prompt(
                     [("class:prompt", "You: ")],
-                    style={"prompt": "bold green"},
+                    style=PROMPT_STYLE,
                 )
 
                 if not user_input.strip():
@@ -135,7 +139,7 @@ Available tools:
 
                 response = asyncio.run(self.llm.chat_with_tools(self._build_messages()))
 
-            content = response.get("content", "")
+            content = str(response.get("content", ""))
             tool_calls = response.get("tool_calls", [])
 
             if self.debug:
@@ -275,7 +279,7 @@ Available tools:
 
         response = asyncio.run(self.llm.chat_with_tools(self._build_messages()))
 
-        content = response.get("content", "")
+        content = str(response.get("content", ""))
         tool_calls = response.get("tool_calls", [])
 
         max_iterations = settings.max_iterations
@@ -315,7 +319,7 @@ Available tools:
 
             # Get next response
             response = asyncio.run(self.llm.chat_with_tools(self._build_messages()))
-            content = response.get("content", "")
+            content = str(response.get("content", ""))
             tool_calls = response.get("tool_calls", [])
 
         # Final response
