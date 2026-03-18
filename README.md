@@ -81,6 +81,10 @@ coding-agent chat --help
 coding-agent run --help
 ```
 
+## Roadmap
+
+See [ROADMAP.md](ROADMAP.md) for a repository-specific maturity roadmap and milestone plan.
+
 ## Project Structure
 
 ```
