@@ -34,6 +34,29 @@ def test_root_command_starts_interactive_session(monkeypatch, tmp_path) -> None:
     assert "Coding Agent" in result.output
 
 
+def test_root_command_accepts_workspace_option(monkeypatch, tmp_path) -> None:
+    """The root interactive command should accept --workspace/-w."""
+
+    captured: dict[str, object] = {}
+
+    class FakeAgent:
+        def __init__(self, working_dir: str, model: str, debug: bool) -> None:
+            captured["working_dir"] = working_dir
+            captured["model"] = model
+            captured["debug"] = debug
+
+        def run_interactive(self) -> None:
+            captured["interactive_started"] = True
+
+    monkeypatch.setattr(cli_module, "Agent", FakeAgent)
+
+    result = runner.invoke(cli_module.app, ["-w", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert captured["working_dir"] == str(tmp_path.resolve())
+    assert captured["interactive_started"] is True
+
+
 def test_chat_banner_uses_ascii_title(monkeypatch, tmp_path) -> None:
     """The chat banner should render safely on non-UTF-8 Windows consoles."""
 
@@ -53,3 +76,47 @@ def test_chat_banner_uses_ascii_title(monkeypatch, tmp_path) -> None:
     assert result.exit_code == 0
     assert "Coding Agent" in result.output
     assert "🤖 Coding Agent" not in result.output
+
+
+def test_run_accepts_workspace_option(monkeypatch, tmp_path) -> None:
+    """The run command should accept --workspace/-w as a path alias."""
+
+    captured: dict[str, object] = {}
+
+    class FakeAgent:
+        def __init__(self, working_dir: str, model: str, debug: bool) -> None:
+            captured["working_dir"] = working_dir
+            captured["model"] = model
+            captured["debug"] = debug
+
+        def run_once(self, prompt: str) -> str:
+            captured["prompt"] = prompt
+            return "done"
+
+    monkeypatch.setattr(cli_module, "Agent", FakeAgent)
+
+    result = runner.invoke(cli_module.app, ["run", "hello", "-w", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert captured["working_dir"] == str(tmp_path.resolve())
+    assert captured["prompt"] == "hello"
+    assert "done" in result.output
+
+
+def test_chat_rejects_conflicting_path_and_workspace(
+    monkeypatch,
+    tmp_path,
+    tmp_path_factory,
+) -> None:
+    """The chat command should reject conflicting path sources."""
+
+    other_path = tmp_path_factory.mktemp("other-workspace")
+    monkeypatch.setattr(cli_module, "Agent", object)
+
+    result = runner.invoke(
+        cli_module.app,
+        ["chat", str(tmp_path), "-w", str(other_path)],
+    )
+
+    assert result.exit_code != 0
+    assert "Use either the path argument or --workspace/-w, not both." in result.output

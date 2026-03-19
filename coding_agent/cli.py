@@ -37,8 +37,20 @@ VersionOption = Annotated[
     bool | None,
     typer.Option("--version", "-v", callback=version_callback, is_eager=True),
 ]
+WorkspaceOption = Annotated[
+    Path | None,
+    typer.Option(
+        "--workspace",
+        "-w",
+        help="Working directory",
+        exists=True,
+        file_okay=False,
+        dir_okay=True,
+        resolve_path=True,
+    ),
+]
 ChatPathArgument = Annotated[
-    Path,
+    Path | None,
     typer.Argument(
         help="Working directory for the agent",
         exists=True,
@@ -54,6 +66,8 @@ RunPromptArgument = Annotated[
 RunPathOption = Annotated[
     Path,
     typer.Option(
+        "--workspace",
+        "-w",
         "--path",
         "-p",
         help="Working directory",
@@ -71,6 +85,22 @@ DebugOption = Annotated[
     bool,
     typer.Option("--debug", "-d", help="Enable debug mode"),
 ]
+
+
+def _resolve_working_dir(
+    *,
+    path: Path | None = None,
+    workspace: Path | None = None,
+) -> Path:
+    """Resolve the working directory from path argument and workspace option."""
+    if path is not None and workspace is not None and path.resolve() != workspace.resolve():
+        raise typer.BadParameter("Use either the path argument or --workspace/-w, not both.")
+
+    if workspace is not None:
+        return workspace.resolve()
+    if path is not None:
+        return path.resolve()
+    return DEFAULT_WORKING_DIR.resolve()
 
 
 def _run_interactive_session(path: Path, model: str, debug: bool) -> None:
@@ -110,11 +140,12 @@ def _run_interactive_session(path: Path, model: str, debug: bool) -> None:
 def main(
     ctx: typer.Context,
     version: VersionOption = None,
+    workspace: WorkspaceOption = None,
 ) -> None:
     """Coding Agent - AI-powered CLI coding assistant."""
     if ctx.invoked_subcommand is None:
         _run_interactive_session(
-            path=DEFAULT_WORKING_DIR.resolve(),
+            path=_resolve_working_dir(workspace=workspace),
             model=DEFAULT_MODEL,
             debug=DEFAULT_DEBUG,
         )
@@ -122,12 +153,17 @@ def main(
 
 @app.command()
 def chat(
-    path: ChatPathArgument = DEFAULT_WORKING_DIR,
+    path: ChatPathArgument = None,
+    workspace: WorkspaceOption = None,
     model: ModelOption = DEFAULT_MODEL,
     debug: DebugOption = DEFAULT_DEBUG,
 ) -> None:
     """Start an interactive coding session."""
-    _run_interactive_session(path=path, model=model, debug=debug)
+    _run_interactive_session(
+        path=_resolve_working_dir(path=path, workspace=workspace),
+        model=model,
+        debug=debug,
+    )
 
 
 @app.command()
@@ -140,7 +176,7 @@ def run(
     """Execute a single task and exit."""
     try:
         agent = Agent(
-            working_dir=str(path),
+            working_dir=str(path.resolve()),
             model=model,
             debug=debug,
         )

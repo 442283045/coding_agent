@@ -59,11 +59,17 @@ AGENT_DEFAULT_MODEL=moonshot/kimi-k2.5
 # Start interactive session
 coding-agent
 
+# Start interactive session in a specific workspace
+coding-agent -w /path/to/project
+
 # Equivalent explicit interactive command
 coding-agent chat
 
 # Start in specific directory
 coding-agent chat /path/to/project
+
+# Or use the workspace option
+coding-agent chat -w /path/to/project
 
 # Use specific model
 coding-agent chat -m gpt-4o
@@ -79,6 +85,7 @@ Interactive responses stream by default.
 
 ```bash
 coding-agent run "Explain the codebase structure"
+coding-agent run -w /path/to/project "Explain the codebase structure"
 ```
 
 ### Available commands
