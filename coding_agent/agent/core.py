@@ -1,6 +1,7 @@
 """Core agent implementation with ReAct loop."""
 
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +38,7 @@ class Agent:
         self.debug = debug
         self.llm = LLMClient(model=self.model, debug=debug)
         self.history: list[dict[str, Any]] = []
+        self._interaction_log_path: Path | None = None
 
         # Initialize tool context
         self.tool_context = {
@@ -97,6 +99,25 @@ class Agent:
         messages.extend(self.history)
         return messages
 
+    def _ensure_interaction_log_file(self) -> Path:
+        """Create the per-session LLM interaction log file on first user submission."""
+        if self._interaction_log_path is not None:
+            return self._interaction_log_path
+
+        settings.ensure_config_dir()
+        log_dir = settings.config_dir / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+
+        timestamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S-%f")
+        log_path = (log_dir / f"interactive-{timestamp}.log").resolve()
+        log_path.touch(exist_ok=True)
+
+        self._interaction_log_path = log_path
+        self.llm.set_log_path(log_path)
+
+        console.print(f"[dim]LLM log file: {log_path}[/dim]")
+        return log_path
+
     def run_interactive(self) -> None:
         """Run interactive chat session."""
         while True:
@@ -124,6 +145,7 @@ class Agent:
 
     def _process_message(self, user_input: str) -> None:
         """Process a single user message through the ReAct loop."""
+        self._ensure_interaction_log_file()
         self.history.append({"role": "user", "content": user_input})
 
         max_iterations = settings.max_iterations

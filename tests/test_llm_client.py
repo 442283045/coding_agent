@@ -1,6 +1,7 @@
 """Tests for LLM client request/response logging."""
 
 import os
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -117,3 +118,34 @@ def test_llm_client_normalizes_kimi_model_and_sets_moonshot_api_key(monkeypatch)
 
     assert client.model == "moonshot/kimi-k2.5"
     assert os.environ["MOONSHOT_API_KEY"] == "moonshot-test-key"
+
+
+@pytest.mark.asyncio
+async def test_chat_with_tools_writes_logs_to_file(monkeypatch, tmp_path: Path) -> None:
+    """LLM logs should be persisted once a log file path is configured."""
+    printed: list[str] = []
+    log_path = tmp_path / "session.log"
+
+    async def fake_acompletion(**kwargs: Any) -> Any:
+        return _build_response(content="Logged to disk")
+
+    monkeypatch.setattr(
+        "coding_agent.llm.client.console.print",
+        lambda *args, **kwargs: printed.append(" ".join(str(arg) for arg in args)),
+    )
+    monkeypatch.setattr("coding_agent.llm.client.litellm.acompletion", fake_acompletion)
+
+    client = LLMClient(model="gpt-4o-mini", debug=False)
+    client.set_log_path(log_path)
+
+    result = await client.chat_with_tools([{"role": "user", "content": "write this to a file"}])
+
+    output = log_path.read_text(encoding="utf-8")
+
+    assert result["content"] == "Logged to disk"
+    assert printed == []
+    assert "Agent Run Log - " in output
+    assert "[1] REQUEST" in output
+    assert "[2] RESPONSE" in output
+    assert '"content": "write this to a file"' in output
+    assert '"content": "Logged to disk"' in output

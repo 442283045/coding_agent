@@ -5,6 +5,7 @@ import os
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import litellm
@@ -28,9 +29,18 @@ class _LLMInteractionLogger:
     """Pretty-printer for structured LLM request and response logs."""
 
     enabled: bool
+    log_path: Path | None = None
     _entry_index: int = 1
-    _header_printed: bool = False
+    _console_header_printed: bool = False
+    _file_header_written: bool = False
     _run_started_at: datetime = field(default_factory=lambda: datetime.now().astimezone())
+
+    def set_log_path(self, log_path: Path) -> None:
+        """Enable appending future log entries to a file."""
+        self.log_path = log_path.resolve()
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        self.log_path.touch(exist_ok=True)
+        self._file_header_written = self.log_path.stat().st_size > 0
 
     def log_request(self, payload: Mapping[str, Any]) -> None:
         """Print a formatted request log entry."""
@@ -58,11 +68,10 @@ class _LLMInteractionLogger:
         payload: Mapping[str, Any],
     ) -> None:
         """Render a single log section."""
-        if not self.enabled:
+        if not self.enabled and self.log_path is None:
             return
 
-        if not self._header_printed:
-            self._print_header()
+        self._ensure_header_written()
 
         timestamp = datetime.now().astimezone()
         entry_index = self._entry_index
@@ -79,10 +88,20 @@ class _LLMInteractionLogger:
             json.dumps(payload, ensure_ascii=False, indent=2, default=str),
             "",
         ]
-        console.print("\n".join(lines), markup=False, highlight=False, soft_wrap=True)
+        self._emit("\n".join(lines))
 
-    def _print_header(self) -> None:
-        """Render the log header once per client instance."""
+    def _ensure_header_written(self) -> None:
+        """Render the log header once per output target."""
+        header = self._build_header()
+        if self.enabled and not self._console_header_printed:
+            console.print(header, markup=False, highlight=False, soft_wrap=True)
+            self._console_header_printed = True
+        if self.log_path is not None and not self._file_header_written:
+            self._append_to_file(header)
+            self._file_header_written = True
+
+    def _build_header(self) -> str:
+        """Build the shared header for a log stream."""
         lines = [
             "=" * 80,
             (
@@ -92,8 +111,21 @@ class _LLMInteractionLogger:
             "=" * 80,
             "",
         ]
-        console.print("\n".join(lines), markup=False, highlight=False, soft_wrap=True)
-        self._header_printed = True
+        return "\n".join(lines)
+
+    def _emit(self, content: str) -> None:
+        """Write a log entry to all configured outputs."""
+        if self.enabled:
+            console.print(content, markup=False, highlight=False, soft_wrap=True)
+        if self.log_path is not None:
+            self._append_to_file(content)
+
+    def _append_to_file(self, content: str) -> None:
+        """Append content to the configured log file."""
+        if self.log_path is None:
+            return
+        with self.log_path.open("a", encoding="utf-8") as handle:
+            handle.write(content)
 
 
 class LLMClient:
@@ -116,6 +148,10 @@ class LLMClient:
             litellm.anthropic_key = settings.anthropic_api_key
         if settings.moonshot_api_key:
             os.environ.setdefault("MOONSHOT_API_KEY", settings.moonshot_api_key)
+
+    def set_log_path(self, log_path: Path) -> None:
+        """Persist future LLM interaction logs to a file."""
+        self._logger.set_log_path(log_path)
 
     def _get_tools_format(self) -> list[dict[str, Any]]:
         """Get tools in the appropriate format for the model."""
