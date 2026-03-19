@@ -280,6 +280,9 @@ class LLMClient:
             "content": message.content or "",
             "tool_calls": [],
         }
+        reasoning_content = getattr(message, "reasoning_content", None)
+        if isinstance(reasoning_content, str) and reasoning_content:
+            result["reasoning_content"] = reasoning_content
 
         if hasattr(message, "tool_calls") and message.tool_calls:
             for tool_call in message.tool_calls:
@@ -319,6 +322,7 @@ class LLMClient:
     ) -> dict[str, Any]:
         """Handle a streaming response that may contain tool calls."""
         content_chunks: list[str] = []
+        reasoning_chunks: list[str] = []
         tool_calls_by_index: dict[int, dict[str, str]] = {}
         finish_reason: str | None = None
 
@@ -335,6 +339,10 @@ class LLMClient:
                 content_chunks.append(content)
                 if on_content_chunk is not None:
                     on_content_chunk(content)
+
+            reasoning_content = getattr(delta, "reasoning_content", None)
+            if isinstance(reasoning_content, str) and reasoning_content:
+                reasoning_chunks.append(reasoning_content)
 
             delta_tool_calls = getattr(delta, "tool_calls", None)
             if not delta_tool_calls:
@@ -371,6 +379,8 @@ class LLMClient:
                 if tool_calls_by_index[index]["name"]
             ],
         }
+        if reasoning_chunks:
+            result["reasoning_content"] = "".join(reasoning_chunks)
         self._logger.log_response(
             self._build_stream_response_log_payload(
                 result,

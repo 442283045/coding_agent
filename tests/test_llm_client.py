@@ -14,6 +14,7 @@ def _build_response(
     *,
     content: str,
     finish_reason: str = "stop",
+    reasoning_content: str | None = None,
     tool_calls: list[Any] | None = None,
 ) -> SimpleNamespace:
     """Create a LiteLLM-like response object for tests."""
@@ -21,7 +22,11 @@ def _build_response(
         choices=[
             SimpleNamespace(
                 finish_reason=finish_reason,
-                message=SimpleNamespace(content=content, tool_calls=tool_calls or []),
+                message=SimpleNamespace(
+                    content=content,
+                    reasoning_content=reasoning_content,
+                    tool_calls=tool_calls or [],
+                ),
             )
         ]
     )
@@ -138,6 +143,21 @@ def test_llm_client_uses_supported_temperature_for_kimi_k25() -> None:
     assert request["temperature"] == 1.0
 
 
+def test_handle_response_preserves_reasoning_content() -> None:
+    """Non-streaming responses should retain reasoning_content when present."""
+    client = LLMClient(model="gpt-4o-mini", debug=False)
+
+    result = client._handle_response(
+        _build_response(
+            content="done",
+            reasoning_content="thought process",
+        )
+    )
+
+    assert result["content"] == "done"
+    assert result["reasoning_content"] == "thought process"
+
+
 @pytest.mark.asyncio
 async def test_chat_with_tools_writes_logs_to_file(monkeypatch, tmp_path: Path) -> None:
     """LLM logs should be persisted once a log file path is configured."""
@@ -183,7 +203,11 @@ async def test_chat_with_tools_streams_by_default_and_collects_tool_calls(monkey
             choices=[
                 SimpleNamespace(
                     finish_reason=None,
-                    delta=SimpleNamespace(content="Hel", tool_calls=None),
+                    delta=SimpleNamespace(
+                        content="Hel",
+                        reasoning_content="Think ",
+                        tool_calls=None,
+                    ),
                 )
             ]
         )
@@ -193,6 +217,7 @@ async def test_chat_with_tools_streams_by_default_and_collects_tool_calls(monkey
                     finish_reason=None,
                     delta=SimpleNamespace(
                         content="lo",
+                        reasoning_content="more",
                         tool_calls=[
                             SimpleNamespace(
                                 index=0,
@@ -239,6 +264,7 @@ async def test_chat_with_tools_streams_by_default_and_collects_tool_calls(monkey
     assert captured_request["stream"] is True
     assert chunks_seen == ["Hel", "lo"]
     assert result["content"] == "Hello"
+    assert result["reasoning_content"] == "Think more"
     assert result["tool_calls"] == [
         {
             "id": "tool-1",

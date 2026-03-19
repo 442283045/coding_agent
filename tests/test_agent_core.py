@@ -160,3 +160,60 @@ def test_process_message_streams_content_without_panel(monkeypatch, tmp_path: Pa
     assert "你" in printed
     assert "好" in printed
     assert display_calls == []
+
+
+def test_process_message_preserves_reasoning_content_for_tool_calls(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """Tool-call assistant messages should keep reasoning_content for Moonshot follow-ups."""
+
+    class FakeLLMClient:
+        def __init__(self) -> None:
+            self.responses = [
+                {
+                    "content": "",
+                    "reasoning_content": "need to inspect files",
+                    "tool_calls": [
+                        {
+                            "id": "tool-1",
+                            "name": "list_directory",
+                            "arguments": '{"path": ".", "recursive": false}',
+                        }
+                    ],
+                },
+                {
+                    "content": "summary",
+                    "tool_calls": [],
+                },
+            ]
+
+        def set_log_path(self, log_path: Path) -> None:
+            return None
+
+        async def chat_with_tools(
+            self, messages: list[dict[str, Any]], **kwargs: Any
+        ) -> dict[str, Any]:
+            return self.responses.pop(0)
+
+    monkeypatch.setattr(
+        "coding_agent.agent.core.console.print",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr("coding_agent.config.Settings.config_dir", property(lambda self: tmp_path))
+    monkeypatch.setattr(Agent, "_execute_tool", lambda self, tool_call: "tool output")
+    monkeypatch.setattr(Agent, "_display_response", lambda self, content: None)
+
+    agent = Agent.__new__(Agent)
+    agent.working_dir = tmp_path
+    agent.model = "moonshot/kimi-k2.5"
+    agent.debug = False
+    agent.llm = FakeLLMClient()
+    agent.history = []
+    agent.tool_context = {"working_dir": str(tmp_path), "debug": False}
+    agent._interaction_log_path = None
+
+    Agent._process_message(agent, "what is this project")
+
+    assistant_messages = [message for message in agent.history if message["role"] == "assistant"]
+    assert assistant_messages[0]["reasoning_content"] == "need to inspect files"

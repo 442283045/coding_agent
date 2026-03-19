@@ -170,6 +170,7 @@ class Agent:
 
             content = str(response.get("content", ""))
             tool_calls = response.get("tool_calls", [])
+            reasoning_content = response.get("reasoning_content")
 
             if self.debug:
                 console.print(f"[dim]Iteration {iteration + 1}: {len(tool_calls)} tool calls[/dim]")
@@ -181,6 +182,8 @@ class Agent:
                     "role": "assistant",
                     "content": content,
                 }
+                if isinstance(reasoning_content, str) and reasoning_content:
+                    assistant_message["reasoning_content"] = reasoning_content
 
                 # Format tool calls for the message
                 if "claude" in self.model.lower():
@@ -247,6 +250,11 @@ class Agent:
                     {
                         "role": "assistant",
                         "content": content,
+                        **(
+                            {"reasoning_content": reasoning_content}
+                            if isinstance(reasoning_content, str) and reasoning_content
+                            else {}
+                        ),
                     }
                 )
                 break
@@ -311,6 +319,7 @@ class Agent:
 
         content = str(response.get("content", ""))
         tool_calls = response.get("tool_calls", [])
+        reasoning_content = response.get("reasoning_content")
 
         max_iterations = settings.max_iterations
         iteration = 0
@@ -334,6 +343,8 @@ class Agent:
                     for tc in tool_calls
                 ],
             }
+            if isinstance(reasoning_content, str) and reasoning_content:
+                assistant_message["reasoning_content"] = reasoning_content
             self.history.append(assistant_message)
 
             # Execute tools
@@ -351,7 +362,11 @@ class Agent:
             response = asyncio.run(self.llm.chat_with_tools(self._build_messages()))
             content = str(response.get("content", ""))
             tool_calls = response.get("tool_calls", [])
+            reasoning_content = response.get("reasoning_content")
 
         # Final response
-        self.history.append({"role": "assistant", "content": content})
+        final_message: dict[str, Any] = {"role": "assistant", "content": content}
+        if isinstance(reasoning_content, str) and reasoning_content:
+            final_message["reasoning_content"] = reasoning_content
+        self.history.append(final_message)
         return content
