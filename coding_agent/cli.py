@@ -5,6 +5,7 @@ from typing import Annotated
 
 import typer
 from rich.console import Console
+from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.text import Text
 
@@ -203,7 +204,7 @@ def run(
             debug=debug,
         )
         result = agent.run_once(prompt)
-        console.print(result)
+        console.print(Markdown(result))
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
         if debug:

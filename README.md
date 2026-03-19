@@ -82,6 +82,7 @@ After you submit the first interactive message, the agent creates a per-session 
 Interactive responses stream by default.
 The startup banner shows `Workspace`, preserving the `-w/--workspace` value when provided.
 Tool invocations are announced in the console when they run.
+Responses are rendered as Markdown in the CLI.
 
 ### Single command mode
 

@@ -151,6 +151,32 @@ def test_run_accepts_workspace_option(monkeypatch, tmp_path) -> None:
     assert "done" in result.output
 
 
+def test_run_renders_markdown_output(monkeypatch, tmp_path) -> None:
+    """The run command should render final output as Markdown."""
+
+    rendered_markdown: list[str] = []
+
+    class FakeMarkdown:
+        def __init__(self, content: str) -> None:
+            self.content = content
+            rendered_markdown.append(content)
+
+    class FakeAgent:
+        def __init__(self, working_dir: str, model: str, debug: bool) -> None:
+            return None
+
+        def run_once(self, prompt: str) -> str:
+            return "# Title\n\n`code`"
+
+    monkeypatch.setattr(cli_module, "Agent", FakeAgent)
+    monkeypatch.setattr(cli_module, "Markdown", FakeMarkdown)
+
+    result = runner.invoke(cli_module.app, ["run", "hello", "-w", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert rendered_markdown == ["# Title\n\n`code`"]
+
+
 def test_chat_rejects_conflicting_path_and_workspace(
     monkeypatch,
     tmp_path,

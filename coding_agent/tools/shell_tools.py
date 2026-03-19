@@ -26,7 +26,7 @@ def _is_command_allowed(command: str) -> tuple[bool, str]:
         base_cmd = parts[0]
     except ValueError as e:
         return False, f"Invalid command syntax: {e}"
-    
+
     # Handle common aliases
     alias_map = {
         "ll": "ls",
@@ -36,11 +36,11 @@ def _is_command_allowed(command: str) -> tuple[bool, str]:
         "pytest": "pytest",
     }
     base_cmd = alias_map.get(base_cmd, base_cmd)
-    
+
     allowed = settings.allowed_shell_commands
     if base_cmd not in allowed:
         return False, f"Command '{base_cmd}' is not allowed. Allowed: {', '.join(allowed)}"
-    
+
     # Block dangerous patterns
     dangerous_patterns = [
         "rm -rf /",
@@ -51,19 +51,19 @@ def _is_command_allowed(command: str) -> tuple[bool, str]:
         ":(){ :|:& };:",  # Fork bomb
         "chmod -R 777 /",
     ]
-    
+
     for pattern in dangerous_patterns:
         if pattern in command:
             return False, f"Dangerous pattern detected: {pattern}"
-    
+
     return True, ""
 
 
 @registry.tool(
     name="execute_shell",
     description="Execute a shell command safely. Only pre-approved commands are allowed. "
-                "Common allowed commands: git, python, pytest, ls, cat, echo, find, grep. "
-                "Returns stdout and stderr output.",
+    "Common allowed commands: git, python, pytest, ls, cat, echo, find, grep. "
+    "Returns stdout and stderr output.",
 )
 async def execute_shell(
     command: str,
@@ -72,12 +72,12 @@ async def execute_shell(
 ) -> str:
     """Execute a shell command with safety checks."""
     working_dir = _get_working_dir(ctx)
-    
+
     # Validate command
     allowed, reason = _is_command_allowed(command)
     if not allowed:
         return f"Error: {reason}"
-    
+
     try:
         # Execute command with timeout
         process = await asyncio.create_subprocess_shell(
@@ -87,7 +87,7 @@ async def execute_shell(
             cwd=str(working_dir),
             limit=1024 * 1024,  # 1MB buffer limit
         )
-        
+
         try:
             stdout, stderr = await asyncio.wait_for(
                 process.communicate(),
@@ -97,34 +97,34 @@ async def execute_shell(
             process.kill()
             await process.wait()
             return f"Error: Command timed out after {timeout} seconds"
-        
+
         # Decode output
         stdout_str = stdout.decode("utf-8", errors="replace") if stdout else ""
         stderr_str = stderr.decode("utf-8", errors="replace") if stderr else ""
-        
+
         # Build result
         result_parts = []
-        
+
         if process.returncode != 0:
             result_parts.append(f"Exit code: {process.returncode}")
-        
+
         if stdout_str:
             # Truncate if too long
             if len(stdout_str) > 10000:
                 stdout_str = stdout_str[:10000] + "\n... [truncated]"
             result_parts.append(f"stdout:\n```\n{stdout_str}\n```")
-        
+
         if stderr_str:
             # Truncate if too long
             if len(stderr_str) > 5000:
                 stderr_str = stderr_str[:5000] + "\n... [truncated]"
             result_parts.append(f"stderr:\n```\n{stderr_str}\n```")
-        
+
         if not result_parts:
             return "Command executed successfully (no output)."
-        
+
         return "\n\n".join(result_parts)
-        
+
     except Exception as e:
         return f"Error executing command: {e}"
 
@@ -139,28 +139,28 @@ async def view_git_log(
 ) -> str:
     """View recent git commits."""
     working_dir = _get_working_dir(ctx)
-    
+
     command = f'git -C "{working_dir}" log --oneline -n {count}'
-    
+
     try:
         process = await asyncio.create_subprocess_shell(
             command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        
+
         stdout, stderr = await process.communicate()
-        
+
         if process.returncode != 0:
             stderr_str = stderr.decode("utf-8", errors="replace")
             return f"Error: {stderr_str}"
-        
+
         stdout_str = stdout.decode("utf-8", errors="replace")
         if not stdout_str.strip():
             return "No git commits found or not a git repository."
-        
+
         return f"Recent commits:\n```\n{stdout_str}```"
-        
+
     except Exception as e:
         return f"Error viewing git log: {e}"
 
@@ -174,24 +174,24 @@ async def view_git_status(
 ) -> str:
     """View git status."""
     working_dir = _get_working_dir(ctx)
-    
+
     command = f'git -C "{working_dir}" status'
-    
+
     try:
         process = await asyncio.create_subprocess_shell(
             command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        
+
         stdout, stderr = await process.communicate()
-        
+
         if process.returncode != 0:
             stderr_str = stderr.decode("utf-8", errors="replace")
             return f"Error: {stderr_str}"
-        
+
         stdout_str = stdout.decode("utf-8", errors="replace")
         return f"Git status:\n```\n{stdout_str}```"
-        
+
     except Exception as e:
         return f"Error viewing git status: {e}"

@@ -116,11 +116,39 @@ def test_interactive_session_creates_one_log_file_on_first_submission(
     assert first_log_print_index == 0
 
 
-def test_process_message_streams_content_without_panel(monkeypatch, tmp_path: Path) -> None:
-    """Interactive processing should print streamed chunks as they arrive."""
+def test_process_message_streams_markdown_with_live(monkeypatch, tmp_path: Path) -> None:
+    """Interactive processing should render streamed output through Rich Markdown."""
 
     printed: list[str] = []
-    display_calls: list[str] = []
+    markdown_updates: list[str] = []
+    live_events: list[str] = []
+
+    class FakeMarkdown:
+        def __init__(self, content: str) -> None:
+            self.content = content
+            markdown_updates.append(content)
+
+    class FakeLive:
+        def __init__(
+            self,
+            renderable: FakeMarkdown,
+            *,
+            console: object,
+            refresh_per_second: int,
+            transient: bool,
+        ) -> None:
+            self.renderable = renderable
+            live_events.append(f"init:{renderable.content}")
+
+        def start(self) -> None:
+            live_events.append("start")
+
+        def update(self, renderable: FakeMarkdown, *, refresh: bool) -> None:
+            self.renderable = renderable
+            live_events.append(f"update:{renderable.content}")
+
+        def stop(self) -> None:
+            live_events.append("stop")
 
     class FakeLLMClient:
         def set_log_path(self, log_path: Path) -> None:
@@ -138,10 +166,12 @@ def test_process_message_streams_content_without_panel(monkeypatch, tmp_path: Pa
         "coding_agent.agent.core.console.print",
         lambda *args, **kwargs: printed.append(" ".join(str(arg) for arg in args)),
     )
+    monkeypatch.setattr("coding_agent.agent.core.Markdown", FakeMarkdown)
+    monkeypatch.setattr("coding_agent.agent.core.Live", FakeLive)
     monkeypatch.setattr(
         Agent,
         "_display_response",
-        lambda self, content: display_calls.append(content),
+        lambda self, content: printed.append(f"display:{content}"),
     )
     monkeypatch.setattr("coding_agent.config.Settings.config_dir", property(lambda self: tmp_path))
 
@@ -157,9 +187,9 @@ def test_process_message_streams_content_without_panel(monkeypatch, tmp_path: Pa
     Agent._process_message(agent, "hello")
 
     assert any(line == "\n[bold blue]Agent:[/bold blue]" for line in printed)
-    assert "你" in printed
-    assert "好" in printed
-    assert display_calls == []
+    assert markdown_updates == ["你", "你好"]
+    assert live_events == ["init:你", "start", "update:你好", "stop"]
+    assert not any(line.startswith("display:") for line in printed)
 
 
 def test_process_message_preserves_reasoning_content_for_tool_calls(

@@ -3,7 +3,7 @@
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from jinja2 import Template
 from prompt_toolkit import PromptSession
@@ -11,8 +11,8 @@ from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.styles import Style
 from rich.console import Console
+from rich.live import Live
 from rich.markdown import Markdown
-from rich.panel import Panel
 
 from coding_agent.config import settings
 from coding_agent.llm.client import LLMClient
@@ -161,24 +161,45 @@ class Agent:
         max_iterations = settings.max_iterations
 
         for iteration in range(max_iterations):
-            stream_state = {"started": False}
+            stream_state: dict[str, object] = {
+                "content": "",
+                "started": False,
+                "live": None,
+            }
 
-            def on_content_chunk(chunk: str, state: dict[str, bool] = stream_state) -> None:
-                if not state["started"]:
+            def on_content_chunk(
+                chunk: str,
+                state: dict[str, object] = stream_state,
+            ) -> None:
+                state["content"] = f"{state['content']}{chunk}"
+                renderable = Markdown(str(state["content"]))
+
+                if not bool(state["started"]):
                     console.print("\n[bold blue]Agent:[/bold blue]")
+                    live = Live(renderable, console=console, refresh_per_second=8, transient=False)
+                    live.start()
+                    state["live"] = live
                     state["started"] = True
-                console.print(chunk, end="", markup=False, highlight=False, soft_wrap=True)
+                    return
+
+                current_live = cast(Live | None, state["live"])
+                if isinstance(current_live, Live):
+                    current_live.update(renderable, refresh=True)
 
             import asyncio
 
-            response = asyncio.run(
-                self.llm.chat_with_tools(
-                    self._build_messages(),
-                    on_content_chunk=on_content_chunk,
+            try:
+                response = asyncio.run(
+                    self.llm.chat_with_tools(
+                        self._build_messages(),
+                        on_content_chunk=on_content_chunk,
+                    )
                 )
-            )
-            if stream_state["started"]:
-                console.print()
+            finally:
+                current_live = cast(Live | None, stream_state["live"])
+                if isinstance(current_live, Live):
+                    current_live.stop()
+                    console.print()
 
             content = str(response.get("content", ""))
             tool_calls = response.get("tool_calls", [])
@@ -311,17 +332,8 @@ class Agent:
 
     def _display_response(self, content: str) -> None:
         """Display assistant response with formatting."""
-        # Check if content contains code blocks
-        if "```" in content:
-            console.print("\n[bold blue]Agent:[/bold blue]")
-            console.print(Markdown(content))
-        else:
-            panel = Panel(
-                content,
-                title="[bold blue]Agent[/bold blue]",
-                border_style="blue",
-            )
-            console.print(panel)
+        console.print("\n[bold blue]Agent:[/bold blue]")
+        console.print(Markdown(content))
 
     def run_once(self, prompt: str) -> str:
         """Execute a single prompt and return the result."""
