@@ -1,5 +1,6 @@
 """Tests for the CLI entrypoint."""
 
+from rich.console import Console
 from typer.testing import CliRunner
 
 import coding_agent.cli as cli_module
@@ -22,6 +23,11 @@ def test_root_command_starts_interactive_session(monkeypatch, tmp_path) -> None:
             captured["interactive_started"] = True
 
     monkeypatch.setattr(cli_module, "Agent", FakeAgent)
+    monkeypatch.setattr(
+        cli_module,
+        "console",
+        Console(width=200, force_terminal=False, color_system=None),
+    )
     monkeypatch.chdir(tmp_path)
 
     result = runner.invoke(cli_module.app, [])
@@ -32,6 +38,7 @@ def test_root_command_starts_interactive_session(monkeypatch, tmp_path) -> None:
     assert captured["debug"] is cli_module.DEFAULT_DEBUG
     assert captured["interactive_started"] is True
     assert "Coding Agent" in result.output
+    assert f"Workspace: {tmp_path.resolve()}" in result.output
 
 
 def test_root_command_accepts_workspace_option(monkeypatch, tmp_path) -> None:
@@ -49,12 +56,18 @@ def test_root_command_accepts_workspace_option(monkeypatch, tmp_path) -> None:
             captured["interactive_started"] = True
 
     monkeypatch.setattr(cli_module, "Agent", FakeAgent)
+    monkeypatch.setattr(
+        cli_module,
+        "console",
+        Console(width=200, force_terminal=False, color_system=None),
+    )
 
     result = runner.invoke(cli_module.app, ["-w", str(tmp_path)])
 
     assert result.exit_code == 0
     assert captured["working_dir"] == str(tmp_path.resolve())
     assert captured["interactive_started"] is True
+    assert f"Workspace: {tmp_path}" in result.output
 
 
 def test_chat_banner_uses_ascii_title(monkeypatch, tmp_path) -> None:
@@ -70,12 +83,47 @@ def test_chat_banner_uses_ascii_title(monkeypatch, tmp_path) -> None:
             return None
 
     monkeypatch.setattr(cli_module, "Agent", FakeAgent)
+    monkeypatch.setattr(
+        cli_module,
+        "console",
+        Console(width=200, force_terminal=False, color_system=None),
+    )
 
     result = runner.invoke(cli_module.app, ["chat", str(tmp_path)])
 
     assert result.exit_code == 0
     assert "Coding Agent" in result.output
+    assert f"Workspace: {tmp_path}" in result.output
     assert "🤖 Coding Agent" not in result.output
+
+
+def test_root_workspace_banner_preserves_relative_workspace_option(monkeypatch, tmp_path) -> None:
+    """The banner should show the user-provided -w value while resolving the real directory."""
+
+    captured: dict[str, object] = {}
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    class FakeAgent:
+        def __init__(self, working_dir: str, model: str, debug: bool) -> None:
+            captured["working_dir"] = working_dir
+
+        def run_interactive(self) -> None:
+            return None
+
+    monkeypatch.setattr(cli_module, "Agent", FakeAgent)
+    monkeypatch.setattr(
+        cli_module,
+        "console",
+        Console(width=200, force_terminal=False, color_system=None),
+    )
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli_module.app, ["-w", "workspace"])
+
+    assert result.exit_code == 0
+    assert captured["working_dir"] == str(workspace.resolve())
+    assert "Workspace: workspace" in result.output
 
 
 def test_run_accepts_workspace_option(monkeypatch, tmp_path) -> None:

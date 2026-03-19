@@ -80,6 +80,7 @@ coding-agent chat --debug
 
 After you submit the first interactive message, the agent creates a per-session LLM log file and prints its absolute path.
 Interactive responses stream by default.
+The startup banner shows `Workspace`, preserving the `-w/--workspace` value when provided.
 
 ### Single command mode
 

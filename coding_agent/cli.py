@@ -46,7 +46,7 @@ WorkspaceOption = Annotated[
         exists=True,
         file_okay=False,
         dir_okay=True,
-        resolve_path=True,
+        resolve_path=False,
     ),
 ]
 ChatPathArgument = Annotated[
@@ -56,7 +56,7 @@ ChatPathArgument = Annotated[
         exists=True,
         file_okay=False,
         dir_okay=True,
-        resolve_path=True,
+        resolve_path=False,
     ),
 ]
 RunPromptArgument = Annotated[
@@ -103,11 +103,17 @@ def _resolve_working_dir(
     return DEFAULT_WORKING_DIR.resolve()
 
 
-def _run_interactive_session(path: Path, model: str, debug: bool) -> None:
+def _run_interactive_session(
+    *,
+    working_dir: Path,
+    workspace_display: Path,
+    model: str,
+    debug: bool,
+) -> None:
     """Start an interactive agent session."""
     # Show welcome banner
     title = Text("Coding Agent", style="bold blue")
-    subtitle = Text(f"Model: {model} | Directory: {path}", style="dim")
+    subtitle = Text(f"Model: {model} | Workspace: {workspace_display}", style="dim")
 
     console.print(
         Panel(
@@ -122,7 +128,7 @@ def _run_interactive_session(path: Path, model: str, debug: bool) -> None:
     # Initialize and run agent
     try:
         agent = Agent(
-            working_dir=str(path),
+            working_dir=str(working_dir),
             model=model,
             debug=debug,
         )
@@ -136,6 +142,19 @@ def _run_interactive_session(path: Path, model: str, debug: bool) -> None:
         raise typer.Exit(1) from e
 
 
+def _get_workspace_display(
+    *,
+    path: Path | None = None,
+    workspace: Path | None = None,
+) -> Path:
+    """Get the user-facing workspace path for the banner."""
+    if workspace is not None:
+        return workspace
+    if path is not None:
+        return path
+    return DEFAULT_WORKING_DIR.resolve()
+
+
 @app.callback()
 def main(
     ctx: typer.Context,
@@ -145,7 +164,8 @@ def main(
     """Coding Agent - AI-powered CLI coding assistant."""
     if ctx.invoked_subcommand is None:
         _run_interactive_session(
-            path=_resolve_working_dir(workspace=workspace),
+            working_dir=_resolve_working_dir(workspace=workspace),
+            workspace_display=_get_workspace_display(workspace=workspace),
             model=DEFAULT_MODEL,
             debug=DEFAULT_DEBUG,
         )
@@ -159,8 +179,10 @@ def chat(
     debug: DebugOption = DEFAULT_DEBUG,
 ) -> None:
     """Start an interactive coding session."""
+    working_dir = _resolve_working_dir(path=path, workspace=workspace)
     _run_interactive_session(
-        path=_resolve_working_dir(path=path, workspace=workspace),
+        working_dir=working_dir,
+        workspace_display=_get_workspace_display(path=path, workspace=workspace),
         model=model,
         debug=debug,
     )
