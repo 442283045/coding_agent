@@ -97,6 +97,18 @@ class Agent:
         messages.extend(self.history)
         return messages
 
+    def _summarize_tool_arguments(self, arguments: dict[str, Any]) -> str:
+        """Create a compact user-facing summary of tool arguments."""
+        try:
+            summary = json.dumps(arguments, ensure_ascii=False, default=str)
+        except TypeError:
+            summary = str(arguments)
+
+        max_length = 160
+        if len(summary) > max_length:
+            return summary[: max_length - 3] + "..."
+        return summary
+
     def _ensure_interaction_log_file(self) -> Path:
         """Create the per-session LLM interaction log file on first user submission."""
         if self._interaction_log_path is not None:
@@ -271,15 +283,17 @@ class Agent:
 
         try:
             args = json.loads(tool_call["arguments"])
+            console.print(
+                f"[dim]Calling tool {tool_name}: {self._summarize_tool_arguments(args)}[/dim]"
+            )
             # Add context to arguments
             args["ctx"] = self.tool_context
 
             import asyncio
 
             result = asyncio.run(tool.execute(**args))
-
-            if self.debug:
-                console.print(f"[dim]Tool {tool_name} executed[/dim]")
+            status = "failed" if result.startswith("Error") else "completed"
+            console.print(f"[dim]Tool {tool_name} {status}[/dim]")
 
             # Truncate result if too long
             max_result_len = 10000

@@ -217,3 +217,35 @@ def test_process_message_preserves_reasoning_content_for_tool_calls(
 
     assistant_messages = [message for message in agent.history if message["role"] == "assistant"]
     assert assistant_messages[0]["reasoning_content"] == "need to inspect files"
+
+
+def test_execute_tool_prints_user_visible_status(monkeypatch, tmp_path: Path) -> None:
+    """Tool execution should print visible start and completion hints for the user."""
+
+    printed: list[str] = []
+
+    class FakeTool:
+        async def execute(self, **kwargs: Any) -> str:
+            return "tool output"
+
+    monkeypatch.setattr("coding_agent.agent.core.registry.get", lambda name: FakeTool())
+    monkeypatch.setattr(
+        "coding_agent.agent.core.console.print",
+        lambda *args, **kwargs: printed.append(" ".join(str(arg) for arg in args)),
+    )
+
+    agent = Agent.__new__(Agent)
+    agent.tool_context = {"working_dir": str(tmp_path), "debug": False}
+    agent.debug = False
+
+    result = Agent._execute_tool(
+        agent,
+        {
+            "name": "list_directory",
+            "arguments": '{"path": ".", "recursive": false}',
+        },
+    )
+
+    assert result == "tool output"
+    assert any(line.startswith("[dim]Calling tool list_directory: ") for line in printed)
+    assert any(line == "[dim]Tool list_directory completed[/dim]" for line in printed)
