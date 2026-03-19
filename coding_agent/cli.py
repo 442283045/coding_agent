@@ -15,6 +15,8 @@ app = typer.Typer(
     help="AI-powered CLI coding agent",
     add_completion=True,
     rich_markup_mode="rich",
+    invoke_without_command=True,
+    no_args_is_help=False,
 )
 console = Console()
 DEFAULT_WORKING_DIR = Path(".")
@@ -71,19 +73,8 @@ DebugOption = Annotated[
 ]
 
 
-@app.callback()
-def main(version: VersionOption = None) -> None:
-    """Coding Agent - AI-powered CLI coding assistant."""
-    pass
-
-
-@app.command()
-def chat(
-    path: ChatPathArgument = DEFAULT_WORKING_DIR,
-    model: ModelOption = DEFAULT_MODEL,
-    debug: DebugOption = DEFAULT_DEBUG,
-) -> None:
-    """Start an interactive coding session."""
+def _run_interactive_session(path: Path, model: str, debug: bool) -> None:
+    """Start an interactive agent session."""
     # Show welcome banner
     title = Text("Coding Agent", style="bold blue")
     subtitle = Text(f"Model: {model} | Directory: {path}", style="dim")
@@ -115,9 +106,33 @@ def chat(
         raise typer.Exit(1) from e
 
 
+@app.callback()
+def main(
+    ctx: typer.Context,
+    version: VersionOption = None,
+) -> None:
+    """Coding Agent - AI-powered CLI coding assistant."""
+    if ctx.invoked_subcommand is None:
+        _run_interactive_session(
+            path=DEFAULT_WORKING_DIR.resolve(),
+            model=DEFAULT_MODEL,
+            debug=DEFAULT_DEBUG,
+        )
+
+
+@app.command()
+def chat(
+    path: ChatPathArgument = DEFAULT_WORKING_DIR,
+    model: ModelOption = DEFAULT_MODEL,
+    debug: DebugOption = DEFAULT_DEBUG,
+) -> None:
+    """Start an interactive coding session."""
+    _run_interactive_session(path=path, model=model, debug=debug)
+
+
 @app.command()
 def run(
-    prompt: RunPromptArgument = ...,
+    prompt: RunPromptArgument,
     path: RunPathOption = DEFAULT_WORKING_DIR,
     model: ModelOption = DEFAULT_MODEL,
     debug: DebugOption = DEFAULT_DEBUG,

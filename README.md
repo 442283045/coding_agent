@@ -56,6 +56,9 @@ AGENT_DEFAULT_MODEL=moonshot/kimi-k2.5
 
 ```bash
 # Start interactive session
+coding-agent
+
+# Equivalent explicit interactive command
 coding-agent chat
 
 # Start in specific directory
