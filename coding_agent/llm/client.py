@@ -147,7 +147,9 @@ class LLMClient:
         if settings.anthropic_api_key:
             litellm.anthropic_key = settings.anthropic_api_key
         if settings.moonshot_api_key:
-            os.environ.setdefault("MOONSHOT_API_KEY", settings.moonshot_api_key)
+            os.environ["MOONSHOT_API_KEY"] = settings.moonshot_api_key
+        if settings.moonshot_api_base:
+            os.environ["MOONSHOT_API_BASE"] = settings.moonshot_api_base
 
     def set_log_path(self, log_path: Path) -> None:
         """Persist future LLM interaction logs to a file."""
@@ -175,9 +177,15 @@ class LLMClient:
             "tools": tools if tools else None,
             "tool_choice": "auto" if tools else None,
             "max_tokens": self.max_tokens,
-            "temperature": self.temperature,
+            "temperature": self._get_request_temperature(),
             "stream": stream,
         }
+
+    def _get_request_temperature(self) -> float:
+        """Return the effective temperature for the current model."""
+        if self.model.lower() == "moonshot/kimi-k2.5":
+            return 1.0
+        return self.temperature
 
     def _build_request_log_payload(self, request: Mapping[str, Any]) -> dict[str, Any]:
         """Create a compact log-friendly view of the outgoing request."""

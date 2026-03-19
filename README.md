@@ -47,6 +47,7 @@ Edit `.env` with your API keys:
 OPENAI_API_KEY=your_openai_key
 ANTHROPIC_API_KEY=your_anthropic_key
 MOONSHOT_API_KEY=your_moonshot_key
+MOONSHOT_API_BASE=https://api.moonshot.cn/v1
 AGENT_DEFAULT_MODEL=moonshot/kimi-k2.5
 ```
 

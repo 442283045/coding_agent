@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
     moonshot_api_key: str | None = Field(default=None, alias="MOONSHOT_API_KEY")
+    moonshot_api_base: str | None = Field(default=None, alias="MOONSHOT_API_BASE")
 
     # Model settings
     default_model: str = Field(default="moonshot/kimi-k2.5")
