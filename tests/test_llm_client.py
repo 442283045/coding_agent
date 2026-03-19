@@ -1,5 +1,6 @@
 """Tests for LLM client request/response logging."""
 
+import os
 from types import SimpleNamespace
 from typing import Any
 
@@ -105,3 +106,14 @@ async def test_chat_with_tools_skips_llm_logs_without_debug(monkeypatch) -> None
 
     assert result["content"] == "quiet"
     assert printed == []
+
+
+def test_llm_client_normalizes_kimi_model_and_sets_moonshot_api_key(monkeypatch) -> None:
+    """Moonshot shorthand models should be normalized and use the configured API key."""
+    monkeypatch.delenv("MOONSHOT_API_KEY", raising=False)
+    monkeypatch.setattr("coding_agent.llm.client.settings.moonshot_api_key", "moonshot-test-key")
+
+    client = LLMClient(model="kimi-k2.5", debug=False)
+
+    assert client.model == "moonshot/kimi-k2.5"
+    assert os.environ["MOONSHOT_API_KEY"] == "moonshot-test-key"

@@ -1,6 +1,7 @@
 """Unified LLM client supporting multiple providers."""
 
 import json
+import os
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -9,7 +10,7 @@ from typing import Any
 import litellm
 from rich.console import Console
 
-from coding_agent.config import settings
+from coding_agent.config import normalize_model_name, settings
 from coding_agent.tools.registry import registry
 
 console = Console()
@@ -99,7 +100,7 @@ class LLMClient:
     """Unified client for LLM interactions."""
 
     def __init__(self, model: str | None = None, debug: bool | None = None):
-        self.model = model or settings.default_model
+        self.model = normalize_model_name(model or settings.default_model)
         self.max_tokens = settings.max_tokens
         self.temperature = settings.temperature
         self.debug = settings.debug if debug is None else debug
@@ -113,6 +114,8 @@ class LLMClient:
             litellm.openai_key = settings.openai_api_key
         if settings.anthropic_api_key:
             litellm.anthropic_key = settings.anthropic_api_key
+        if settings.moonshot_api_key:
+            os.environ.setdefault("MOONSHOT_API_KEY", settings.moonshot_api_key)
 
     def _get_tools_format(self) -> list[dict[str, Any]]:
         """Get tools in the appropriate format for the model."""

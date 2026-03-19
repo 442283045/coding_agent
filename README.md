@@ -46,7 +46,8 @@ Edit `.env` with your API keys:
 ```bash
 OPENAI_API_KEY=your_openai_key
 ANTHROPIC_API_KEY=your_anthropic_key
-AGENT_DEFAULT_MODEL=claude-3-5-sonnet-20241022
+MOONSHOT_API_KEY=your_moonshot_key
+AGENT_DEFAULT_MODEL=moonshot/kimi-k2.5
 ```
 
 ## Usage
