@@ -71,24 +71,14 @@ def test_interactive_session_creates_one_log_file_on_first_submission(
             self.log_paths.append(log_path)
             events.append(("set_log_path", log_path))
 
-        async def chat_with_tools(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
+        async def chat_with_tools(
+            self, messages: list[dict[str, Any]], **kwargs: Any
+        ) -> dict[str, Any]:
             events.append(("chat", messages))
             return {"content": "response", "tool_calls": []}
 
-    class FakeLive:
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            return None
-
-        def __enter__(self) -> "FakeLive":
-            return self
-
-        def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
-            return False
-
     printed: list[str] = []
 
-    monkeypatch.setattr("coding_agent.agent.core.Live", FakeLive)
-    monkeypatch.setattr("coding_agent.agent.core.Spinner", lambda *args, **kwargs: object())
     monkeypatch.setattr(
         "coding_agent.agent.core.console.print",
         lambda *args, **kwargs: printed.append(" ".join(str(arg) for arg in args)),
@@ -124,3 +114,49 @@ def test_interactive_session_creates_one_log_file_on_first_submission(
 
     assert set_log_path_index < first_chat_index
     assert first_log_print_index == 0
+
+
+def test_process_message_streams_content_without_panel(monkeypatch, tmp_path: Path) -> None:
+    """Interactive processing should print streamed chunks as they arrive."""
+
+    printed: list[str] = []
+    display_calls: list[str] = []
+
+    class FakeLLMClient:
+        def set_log_path(self, log_path: Path) -> None:
+            return None
+
+        async def chat_with_tools(
+            self, messages: list[dict[str, Any]], **kwargs: Any
+        ) -> dict[str, Any]:
+            on_content_chunk = kwargs["on_content_chunk"]
+            on_content_chunk("你")
+            on_content_chunk("好")
+            return {"content": "你好", "tool_calls": []}
+
+    monkeypatch.setattr(
+        "coding_agent.agent.core.console.print",
+        lambda *args, **kwargs: printed.append(" ".join(str(arg) for arg in args)),
+    )
+    monkeypatch.setattr(
+        Agent,
+        "_display_response",
+        lambda self, content: display_calls.append(content),
+    )
+    monkeypatch.setattr("coding_agent.config.Settings.config_dir", property(lambda self: tmp_path))
+
+    agent = Agent.__new__(Agent)
+    agent.working_dir = tmp_path
+    agent.model = "gpt-4o-mini"
+    agent.debug = False
+    agent.llm = FakeLLMClient()
+    agent.history = []
+    agent.tool_context = {"working_dir": str(tmp_path), "debug": False}
+    agent._interaction_log_path = None
+
+    Agent._process_message(agent, "hello")
+
+    assert any(line == "\n[bold blue]Agent:[/bold blue]" for line in printed)
+    assert "你" in printed
+    assert "好" in printed
+    assert display_calls == []

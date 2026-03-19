@@ -68,8 +68,8 @@ async def test_chat_with_tools_logs_formatted_request_and_response(monkeypatch) 
 
     client = LLMClient(model="gpt-4o-mini", debug=True)
 
-    first = await client.chat_with_tools([{"role": "user", "content": "你好"}])
-    second = await client.chat_with_tools([{"role": "user", "content": "再说一次"}])
+    first = await client.chat_with_tools([{"role": "user", "content": "你好"}], stream=False)
+    second = await client.chat_with_tools([{"role": "user", "content": "再说一次"}], stream=False)
 
     output = "\n".join(printed)
 
@@ -103,7 +103,7 @@ async def test_chat_with_tools_skips_llm_logs_without_debug(monkeypatch) -> None
     monkeypatch.setattr("coding_agent.llm.client.litellm.acompletion", fake_acompletion)
 
     client = LLMClient(model="gpt-4o-mini", debug=False)
-    result = await client.chat_with_tools([{"role": "user", "content": "hello"}])
+    result = await client.chat_with_tools([{"role": "user", "content": "hello"}], stream=False)
 
     assert result["content"] == "quiet"
     assert printed == []
@@ -156,7 +156,10 @@ async def test_chat_with_tools_writes_logs_to_file(monkeypatch, tmp_path: Path) 
     client = LLMClient(model="gpt-4o-mini", debug=False)
     client.set_log_path(log_path)
 
-    result = await client.chat_with_tools([{"role": "user", "content": "write this to a file"}])
+    result = await client.chat_with_tools(
+        [{"role": "user", "content": "write this to a file"}],
+        stream=False,
+    )
 
     output = log_path.read_text(encoding="utf-8")
 
@@ -167,3 +170,79 @@ async def test_chat_with_tools_writes_logs_to_file(monkeypatch, tmp_path: Path) 
     assert "[2] RESPONSE" in output
     assert '"content": "write this to a file"' in output
     assert '"content": "Logged to disk"' in output
+
+
+@pytest.mark.asyncio
+async def test_chat_with_tools_streams_by_default_and_collects_tool_calls(monkeypatch) -> None:
+    """Streaming should be the default path for chat_with_tools calls."""
+    captured_request: dict[str, Any] = {}
+    chunks_seen: list[str] = []
+
+    async def fake_stream() -> Any:
+        yield SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    finish_reason=None,
+                    delta=SimpleNamespace(content="Hel", tool_calls=None),
+                )
+            ]
+        )
+        yield SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    finish_reason=None,
+                    delta=SimpleNamespace(
+                        content="lo",
+                        tool_calls=[
+                            SimpleNamespace(
+                                index=0,
+                                id="tool-1",
+                                function=SimpleNamespace(
+                                    name="read_file",
+                                    arguments='{"path":"REA',
+                                ),
+                            )
+                        ],
+                    ),
+                )
+            ]
+        )
+        yield SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    finish_reason="tool_calls",
+                    delta=SimpleNamespace(
+                        content=None,
+                        tool_calls=[
+                            SimpleNamespace(
+                                index=0,
+                                function=SimpleNamespace(name=None, arguments='DME.md"}'),
+                            )
+                        ],
+                    ),
+                )
+            ]
+        )
+
+    async def fake_acompletion(**kwargs: Any) -> Any:
+        captured_request.update(kwargs)
+        return fake_stream()
+
+    monkeypatch.setattr("coding_agent.llm.client.litellm.acompletion", fake_acompletion)
+
+    client = LLMClient(model="gpt-4o-mini", debug=False)
+    result = await client.chat_with_tools(
+        [{"role": "user", "content": "hello"}],
+        on_content_chunk=chunks_seen.append,
+    )
+
+    assert captured_request["stream"] is True
+    assert chunks_seen == ["Hel", "lo"]
+    assert result["content"] == "Hello"
+    assert result["tool_calls"] == [
+        {
+            "id": "tool-1",
+            "name": "read_file",
+            "arguments": '{"path":"README.md"}',
+        }
+    ]

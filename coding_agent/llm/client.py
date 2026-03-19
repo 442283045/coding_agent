@@ -2,7 +2,7 @@
 
 import json
 import os
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -233,6 +233,20 @@ class LLMClient:
             payload["finish_reason"] = finish_reason
         return payload
 
+    def _build_stream_response_log_payload(
+        self,
+        result: Mapping[str, Any],
+        *,
+        finish_reason: str | None,
+    ) -> dict[str, Any]:
+        """Create a structured response payload for streaming responses."""
+        payload = dict(result)
+        if finish_reason is not None:
+            payload["finish_reason"] = finish_reason
+        else:
+            payload["finish_reason"] = "stream"
+        return payload
+
     async def chat(
         self,
         messages: list[dict[str, Any]],
@@ -297,16 +311,93 @@ class LLMClient:
                 }
             )
 
+    async def _handle_stream_with_tools(
+        self,
+        response: Any,
+        *,
+        on_content_chunk: Callable[[str], None] | None = None,
+    ) -> dict[str, Any]:
+        """Handle a streaming response that may contain tool calls."""
+        content_chunks: list[str] = []
+        tool_calls_by_index: dict[int, dict[str, str]] = {}
+        finish_reason: str | None = None
+
+        async for chunk in response:
+            choice = chunk.choices[0]
+            delta = getattr(choice, "delta", None)
+            finish_reason = getattr(choice, "finish_reason", None) or finish_reason
+
+            if delta is None:
+                continue
+
+            content = getattr(delta, "content", None)
+            if isinstance(content, str) and content:
+                content_chunks.append(content)
+                if on_content_chunk is not None:
+                    on_content_chunk(content)
+
+            delta_tool_calls = getattr(delta, "tool_calls", None)
+            if not delta_tool_calls:
+                continue
+
+            for delta_tool_call in delta_tool_calls:
+                index = getattr(delta_tool_call, "index", 0)
+                tool_call = tool_calls_by_index.setdefault(
+                    index,
+                    {"id": "", "name": "", "arguments": ""},
+                )
+
+                tool_call_id = getattr(delta_tool_call, "id", None)
+                if isinstance(tool_call_id, str) and tool_call_id:
+                    tool_call["id"] = tool_call_id
+
+                function = getattr(delta_tool_call, "function", None)
+                if function is None:
+                    continue
+
+                function_name = getattr(function, "name", None)
+                if isinstance(function_name, str) and function_name:
+                    tool_call["name"] = function_name
+
+                function_arguments = getattr(function, "arguments", None)
+                if isinstance(function_arguments, str) and function_arguments:
+                    tool_call["arguments"] += function_arguments
+
+        result: dict[str, Any] = {
+            "content": "".join(content_chunks),
+            "tool_calls": [
+                tool_calls_by_index[index]
+                for index in sorted(tool_calls_by_index)
+                if tool_calls_by_index[index]["name"]
+            ],
+        }
+        self._logger.log_response(
+            self._build_stream_response_log_payload(
+                result,
+                finish_reason=finish_reason,
+            )
+        )
+        return result
+
     async def chat_with_tools(
         self,
         messages: list[dict[str, Any]],
+        *,
+        stream: bool = True,
+        on_content_chunk: Callable[[str], None] | None = None,
     ) -> dict[str, Any]:
         """Send a chat request and return structured response with tool calls."""
-        request = self._build_completion_request(messages, stream=False)
+        request = self._build_completion_request(messages, stream=stream)
         self._logger.log_request(self._build_request_log_payload(request))
 
         try:
             response = await litellm.acompletion(**request)
+            if stream:
+                return await self._handle_stream_with_tools(
+                    response,
+                    on_content_chunk=on_content_chunk,
+                )
+
             result = self._handle_response(response)
             self._logger.log_response(self._build_response_log_payload(response, result))
             return result

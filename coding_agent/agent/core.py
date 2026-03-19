@@ -11,10 +11,8 @@ from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.styles import Style
 from rich.console import Console
-from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
-from rich.spinner import Spinner
 
 from coding_agent.config import settings
 from coding_agent.llm.client import LLMClient
@@ -151,15 +149,24 @@ class Agent:
         max_iterations = settings.max_iterations
 
         for iteration in range(max_iterations):
-            # Show thinking spinner
-            with Live(
-                Spinner("dots", text="Thinking..."),
-                refresh_per_second=4,
-                transient=True,
-            ):
-                import asyncio
+            stream_state = {"started": False}
 
-                response = asyncio.run(self.llm.chat_with_tools(self._build_messages()))
+            def on_content_chunk(chunk: str, state: dict[str, bool] = stream_state) -> None:
+                if not state["started"]:
+                    console.print("\n[bold blue]Agent:[/bold blue]")
+                    state["started"] = True
+                console.print(chunk, end="", markup=False, highlight=False, soft_wrap=True)
+
+            import asyncio
+
+            response = asyncio.run(
+                self.llm.chat_with_tools(
+                    self._build_messages(),
+                    on_content_chunk=on_content_chunk,
+                )
+            )
+            if stream_state["started"]:
+                console.print()
 
             content = str(response.get("content", ""))
             tool_calls = response.get("tool_calls", [])
@@ -234,7 +241,8 @@ class Agent:
                         )
             else:
                 # No tool calls - display the response
-                self._display_response(content)
+                if not stream_state["started"]:
+                    self._display_response(content)
                 self.history.append(
                     {
                         "role": "assistant",
