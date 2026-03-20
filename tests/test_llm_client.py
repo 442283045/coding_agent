@@ -236,6 +236,7 @@ async def test_chat_with_tools_streams_by_default_and_collects_tool_calls(monkey
     """Streaming should be the default path for chat_with_tools calls."""
     captured_request: dict[str, Any] = {}
     chunks_seen: list[str] = []
+    reasoning_chunks_seen: list[str] = []
 
     async def fake_stream() -> Any:
         yield SimpleNamespace(
@@ -298,10 +299,12 @@ async def test_chat_with_tools_streams_by_default_and_collects_tool_calls(monkey
     result = await client.chat_with_tools(
         [{"role": "user", "content": "hello"}],
         on_content_chunk=chunks_seen.append,
+        on_reasoning_chunk=reasoning_chunks_seen.append,
     )
 
     assert captured_request["stream"] is True
     assert chunks_seen == ["Hel", "lo"]
+    assert reasoning_chunks_seen == ["Think ", "more"]
     assert result["content"] == "Hello"
     assert result["finish_reason"] == "tool_calls"
     assert result["reasoning_content"] == "Think more"

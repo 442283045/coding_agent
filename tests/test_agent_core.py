@@ -504,6 +504,101 @@ def test_process_message_streams_markdown_with_live(monkeypatch, tmp_path: Path)
     assert not any(line.startswith("display:") for line in printed)
 
 
+def test_process_message_streams_reasoning_content_before_answer(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """Streaming reasoning_content should be shown before normal content arrives."""
+
+    live_events: list[str] = []
+    loading_events: list[str] = []
+
+    class FakeRenderable(str):
+        """Simple renderable marker for assertions."""
+
+    class FakeLive:
+        def __init__(
+            self,
+            renderable: FakeRenderable,
+            *,
+            console: object,
+            refresh_per_second: int,
+            transient: bool,
+        ) -> None:
+            _ = (console, refresh_per_second, transient)
+            live_events.append(f"init:{renderable}")
+
+        def start(self) -> None:
+            live_events.append("start")
+
+        def update(self, renderable: FakeRenderable, *, refresh: bool) -> None:
+            _ = refresh
+            live_events.append(f"update:{renderable}")
+
+        def stop(self) -> None:
+            live_events.append("stop")
+
+    class FakeStatus:
+        def stop(self) -> None:
+            loading_events.append("stop")
+
+    class FakeLLMClient:
+        def set_log_path(self, log_path: Path) -> None:
+            return None
+
+        async def chat_with_tools(
+            self, messages: list[dict[str, Any]], **kwargs: Any
+        ) -> dict[str, Any]:
+            kwargs["on_reasoning_chunk"]("先分析问题")
+            kwargs["on_content_chunk"]("最终答案")
+            return {
+                "content": "最终答案",
+                "reasoning_content": "先分析问题",
+                "tool_calls": [],
+            }
+
+    @contextmanager
+    def fake_loading(self: Agent, message: str):
+        loading_events.append(message)
+        yield FakeStatus()
+
+    monkeypatch.setattr(
+        "coding_agent.agent.core.console.print",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr("coding_agent.agent.core.Live", FakeLive)
+    monkeypatch.setattr(Agent, "_loading_status", fake_loading)
+    monkeypatch.setattr(
+        Agent,
+        "_build_stream_renderable",
+        lambda self, *, content, reasoning_content: FakeRenderable(
+            f"reasoning={reasoning_content}|content={content}"
+        ),
+    )
+    monkeypatch.setattr(Agent, "_display_response", lambda self, content: None)
+    monkeypatch.setattr("coding_agent.config.Settings.config_dir", property(lambda self: tmp_path))
+
+    agent = Agent.__new__(Agent)
+    agent.working_dir = tmp_path
+    agent.model = "moonshot/kimi-k2.5"
+    agent.debug = False
+    agent.llm = FakeLLMClient()
+    agent.history = []
+    agent.registry = ToolRegistry()
+    agent.tool_context = {"working_dir": str(tmp_path), "debug": False}
+    agent._interaction_log_path = None
+
+    Agent._process_message(agent, "hello")
+
+    assert loading_events == ["Thinking...", "stop"]
+    assert live_events == [
+        "init:reasoning=先分析问题|content=",
+        "start",
+        "update:reasoning=先分析问题|content=最终答案",
+        "stop",
+    ]
+
+
 def test_process_message_preserves_reasoning_content_for_tool_calls(
     monkeypatch,
     tmp_path: Path,

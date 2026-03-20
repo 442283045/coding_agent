@@ -12,10 +12,11 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.styles import Style
-from rich.console import Console
+from rich.console import Console, Group, RenderableType
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.status import Status
+from rich.text import Text
 
 from coding_agent.agent.slash_commands import (
     SlashCommandContext,
@@ -299,6 +300,29 @@ class Agent:
             return summary[: max_length - 3] + "..."
         return summary
 
+    def _build_stream_renderable(
+        self,
+        *,
+        content: str,
+        reasoning_content: str,
+    ) -> RenderableType:
+        """Build the live renderable for streaming reasoning and response text."""
+        renderables: list[RenderableType] = []
+
+        if reasoning_content:
+            renderables.append(Text(reasoning_content, style="bright_black"))
+
+        if content:
+            renderables.append(Markdown(content))
+
+        if not renderables:
+            return Text("")
+
+        if len(renderables) == 1:
+            return renderables[0]
+
+        return Group(*renderables)
+
     def _parse_tool_arguments(self, raw_arguments: str) -> dict[str, Any]:
         """Decode tool arguments and ensure the payload is a JSON object."""
         arguments = json.loads(raw_arguments)
@@ -458,6 +482,7 @@ class Agent:
         for iteration in range(max_iterations):
             stream_state: dict[str, object] = {
                 "content": "",
+                "reasoning_content": "",
                 "started": False,
                 "live": None,
                 "thinking_status": None,
@@ -475,7 +500,33 @@ class Agent:
                 state: dict[str, object] = stream_state,
             ) -> None:
                 state["content"] = f"{state['content']}{chunk}"
-                renderable = Markdown(str(state["content"]))
+                renderable = self._build_stream_renderable(
+                    content=str(state["content"]),
+                    reasoning_content=str(state["reasoning_content"]),
+                )
+
+                if not bool(state["started"]):
+                    stop_thinking_status(state)
+                    console.print("\n[bold blue]Agent:[/bold blue]")
+                    live = Live(renderable, console=console, refresh_per_second=8, transient=False)
+                    live.start()
+                    state["live"] = live
+                    state["started"] = True
+                    return
+
+                current_live = cast(Live | None, state["live"])
+                if isinstance(current_live, Live):
+                    current_live.update(renderable, refresh=True)
+
+            def on_reasoning_chunk(
+                chunk: str,
+                state: dict[str, object] = stream_state,
+            ) -> None:
+                state["reasoning_content"] = f"{state['reasoning_content']}{chunk}"
+                renderable = self._build_stream_renderable(
+                    content=str(state["content"]),
+                    reasoning_content=str(state["reasoning_content"]),
+                )
 
                 if not bool(state["started"]):
                     stop_thinking_status(state)
@@ -499,6 +550,7 @@ class Agent:
                         self.llm.chat_with_tools(
                             self._build_messages(),
                             on_content_chunk=on_content_chunk,
+                            on_reasoning_chunk=on_reasoning_chunk,
                         )
                     )
                 finally:

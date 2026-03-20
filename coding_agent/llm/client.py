@@ -328,6 +328,7 @@ class LLMClient:
         response: Any,
         *,
         on_content_chunk: Callable[[str], None] | None = None,
+        on_reasoning_chunk: Callable[[str], None] | None = None,
     ) -> dict[str, Any]:
         """Handle a streaming response that may contain tool calls."""
         content_chunks: list[str] = []
@@ -352,6 +353,8 @@ class LLMClient:
             reasoning_content = getattr(delta, "reasoning_content", None)
             if isinstance(reasoning_content, str) and reasoning_content:
                 reasoning_chunks.append(reasoning_content)
+                if on_reasoning_chunk is not None:
+                    on_reasoning_chunk(reasoning_content)
 
             delta_tool_calls = getattr(delta, "tool_calls", None)
             if not delta_tool_calls:
@@ -406,6 +409,7 @@ class LLMClient:
         *,
         stream: bool = True,
         on_content_chunk: Callable[[str], None] | None = None,
+        on_reasoning_chunk: Callable[[str], None] | None = None,
     ) -> dict[str, Any]:
         """Send a chat request and return structured response with tool calls."""
         request = self._build_completion_request(messages, stream=stream)
@@ -417,6 +421,7 @@ class LLMClient:
                 return await self._handle_stream_with_tools(
                     response,
                     on_content_chunk=on_content_chunk,
+                    on_reasoning_chunk=on_reasoning_chunk,
                 )
 
             result = self._handle_response(response)

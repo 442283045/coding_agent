@@ -107,6 +107,7 @@ The startup banner shows `Workspace`, preserving the `-w/--workspace` value when
 Tool invocations are announced in the console when they run.
 Long-running tool execution and MCP configuration or reload flows show a visible loading state in interactive mode.
 The agent also shows a `Thinking...` loading state while waiting for the first streamed model output.
+When the model streams `reasoning_content`, the CLI renders it as dim grey preview text before and alongside the main answer.
 Responses are rendered as Markdown in the CLI.
 
 Interactive mode also supports local slash commands:
