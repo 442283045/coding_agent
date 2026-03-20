@@ -61,7 +61,10 @@ class MCPManager:
         client_factory: Any = Client
 
         for server_name, server_config in self._server_configs.items():
-            client = cast(_MCPClientProtocol, client_factory(server_config.to_fastmcp_config()))
+            client = cast(
+                _MCPClientProtocol,
+                client_factory(self._build_client_config(server_name, server_config)),
+            )
             await client.__aenter__()
             self._clients[server_name] = client
 
@@ -143,6 +146,18 @@ class MCPManager:
         except AttributeError:
             rendered_result = json.dumps(result, ensure_ascii=False, indent=2, default=str)
         return str(rendered_result)
+
+    @staticmethod
+    def _build_client_config(
+        server_name: str,
+        server_config: MCPServerConfig,
+    ) -> dict[str, dict[str, dict[str, Any]]]:
+        """Wrap one server config in the MCPConfig shape expected by FastMCP Client."""
+        return {
+            "mcpServers": {
+                server_name: server_config.to_fastmcp_config(),
+            }
+        }
 
     @staticmethod
     def _build_tool_name(server_name: str, remote_tool_name: str) -> str:

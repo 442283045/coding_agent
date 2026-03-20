@@ -16,9 +16,12 @@ async def test_mcp_manager_registers_and_executes_dynamic_tools(monkeypatch) -> 
 
     recorded_calls: list[tuple[str, dict[str, object] | None]] = []
 
+    client_transports: list[dict[str, object]] = []
+
     class FakeClient:
         def __init__(self, transport: dict[str, object]) -> None:
             self.transport = transport
+            client_transports.append(transport)
 
         async def __aenter__(self) -> FakeClient:
             return self
@@ -70,6 +73,19 @@ async def test_mcp_manager_registers_and_executes_dynamic_tools(monkeypatch) -> 
     assert registered_names == ["mcp__docs__search"]
     assert tool is not None
     assert tool.to_openai_format()["function"]["parameters"]["required"] == ["query"]
+    assert client_transports == [
+        {
+            "mcpServers": {
+                "docs": {
+                    "command": "npx",
+                    "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+                    "env": {},
+                    "headers": {},
+                    "transport": "stdio",
+                }
+            }
+        }
+    ]
 
     result = await tool.execute(query="agents.md")
 
