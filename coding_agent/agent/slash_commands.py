@@ -12,6 +12,7 @@ from prompt_toolkit.document import Document
 from pydantic import ValidationError
 
 from coding_agent.config import MCPServerConfig, Settings
+from coding_agent.skills import SkillCatalog
 
 
 @dataclass(slots=True)
@@ -21,6 +22,8 @@ class SlashCommandContext:
     working_dir: Path
     settings: Settings
     reload_mcp_tools: Callable[[], list[str]]
+    list_skills: Callable[[], SkillCatalog]
+    reload_skills: Callable[[], SkillCatalog]
 
 
 @dataclass(slots=True)
@@ -206,6 +209,18 @@ def create_default_slash_command_registry() -> SlashCommandRegistry:
             ),
         )
     )
+    registry.register(
+        SlashCommand(
+            name="skills",
+            description="Inspect and rescan installed workspace skills.",
+            handler=_handle_skills_command,
+            subcommands=(
+                SlashCommandOption("list", "Show the currently discovered skills."),
+                SlashCommandOption("help", "Show `/skills` usage."),
+                SlashCommandOption("reload", "Rescan workspace skill directories."),
+            ),
+        )
+    )
     return registry
 
 
@@ -230,6 +245,27 @@ def _handle_mcp_command(ctx: SlashCommandContext, arguments: str) -> SlashComman
             return SlashCommandResult(_reload_mcp_servers(ctx))
         case _:
             raise SlashCommandError(f"Unknown `/mcp` action `{action}`.\n\n{_render_mcp_help(ctx)}")
+
+
+def _handle_skills_command(ctx: SlashCommandContext, arguments: str) -> SlashCommandResult:
+    """Handle the /skills slash command."""
+    if not arguments:
+        return SlashCommandResult(_render_skills_overview(ctx.list_skills(), ctx.working_dir))
+
+    action, _, remainder = arguments.partition(" ")
+    _ = remainder
+
+    match action.lower():
+        case "list":
+            return SlashCommandResult(_render_skills_overview(ctx.list_skills(), ctx.working_dir))
+        case "help":
+            return SlashCommandResult(_render_skills_help())
+        case "reload":
+            return SlashCommandResult(_reload_skills(ctx))
+        case _:
+            raise SlashCommandError(
+                f"Unknown `/skills` action `{action}`.\n\n{_render_skills_help()}"
+            )
 
 
 def _render_mcp_overview(ctx: SlashCommandContext) -> str:
@@ -329,6 +365,38 @@ def _remove_mcp_server(ctx: SlashCommandContext, remainder: str) -> str:
 def _reload_mcp_servers(ctx: SlashCommandContext) -> str:
     """Reload MCP tools for the current session."""
     return _reload_current_session(ctx)
+
+
+def _render_skills_overview(skill_catalog: SkillCatalog, working_dir: Path) -> str:
+    """Render the current discovered skill set and command help."""
+    return "\n".join([skill_catalog.format_markdown(working_dir), "", _render_skills_help()])
+
+
+def _render_skills_help() -> str:
+    """Render /skills usage instructions."""
+    return "\n".join(
+        [
+            "Usage:",
+            "- `/skills`",
+            "- `/skills list`",
+            "- `/skills reload`",
+        ]
+    )
+
+
+def _reload_skills(ctx: SlashCommandContext) -> str:
+    """Rescan workspace-local skills for the current session."""
+    try:
+        skill_catalog = ctx.reload_skills()
+    except Exception as exc:  # pragma: no cover - surfaced as user-facing text
+        raise SlashCommandError(f"Failed to reload skills: {exc}") from exc
+
+    skill_count = len(skill_catalog.skills)
+    if skill_count == 0:
+        return "Reloaded workspace skills. No installed project skills were found."
+
+    skill_list = ", ".join(f"`{skill.name}`" for skill in skill_catalog.skills)
+    return f"Reloaded workspace skills. Discovered {skill_count} skill(s): {skill_list}"
 
 
 def _reload_current_session(ctx: SlashCommandContext) -> str:

@@ -23,6 +23,7 @@ from coding_agent.agent.slash_commands import (
 from coding_agent.config import settings
 from coding_agent.llm.client import LLMClient
 from coding_agent.mcp import MCPManager
+from coding_agent.skills import SkillCatalog, SkillManager
 from coding_agent.tools.registry import ToolRegistry, registry
 
 console = Console()
@@ -47,6 +48,8 @@ class Agent:
         self._async_runner: object | None = None
         self.registry: ToolRegistry = ToolRegistry()
         self.mcp_manager = MCPManager(settings.load_mcp_servers())
+        self.skill_manager = SkillManager(working_dir=self.working_dir)
+        self.skill_catalog: SkillCatalog = self.skill_manager.discover()
         self.slash_commands = create_default_slash_command_registry()
 
         # Initialize tool context
@@ -123,9 +126,7 @@ class Agent:
             return
 
         server_names = ", ".join(f"`{name}`" for name in self.mcp_manager.server_names)
-        console.print(
-            f"[green]MCP configured successfully.[/green] Loaded servers: {server_names}"
-        )
+        console.print(f"[green]MCP configured successfully.[/green] Loaded servers: {server_names}")
 
         if not tool_names:
             console.print("[yellow]MCP is connected, but no tools were exposed.[/yellow]")
@@ -141,9 +142,7 @@ class Agent:
             return
 
         server_names = ", ".join(f"`{name}`" for name in self.mcp_manager.server_names)
-        console.print(
-            f"[red]MCP configuration failed.[/red] Configured servers: {server_names}"
-        )
+        console.print(f"[red]MCP configuration failed.[/red] Configured servers: {server_names}")
         console.print(f"[red]Reason:[/red] {error}")
 
     def _init_tools(self) -> None:
@@ -187,12 +186,16 @@ class Agent:
     def _load_system_prompt(self) -> str:
         """Load and render system prompt template."""
         prompt_path = Path(__file__).parent.parent / "prompts" / "system.j2"
+        skill_catalog = self.list_skills()
+        skill_entries = skill_catalog.prompt_entries(self.working_dir)
 
         if prompt_path.exists():
-            template = Template(prompt_path.read_text())
+            template = Template(prompt_path.read_text(encoding="utf-8"))
             return template.render(
                 working_dir=str(self.working_dir),
                 tools=self.registry.list_tools(),
+                skill_search_roots=skill_catalog.root_display_paths(self.working_dir),
+                skills=skill_entries,
             )
 
         # Fallback system prompt
@@ -252,7 +255,26 @@ class Agent:
             working_dir=self.working_dir,
             settings=settings,
             reload_mcp_tools=self.reload_mcp_tools,
+            list_skills=self.list_skills,
+            reload_skills=self.reload_skills,
         )
+
+    def list_skills(self) -> SkillCatalog:
+        """Return the currently discovered workspace skill catalog."""
+        skill_catalog = getattr(self, "skill_catalog", None)
+        if isinstance(skill_catalog, SkillCatalog):
+            return skill_catalog
+        return SkillCatalog()
+
+    def reload_skills(self) -> SkillCatalog:
+        """Rescan workspace-local skills and update the prompt context."""
+        skill_manager = getattr(self, "skill_manager", None)
+        if skill_manager is None:
+            self.skill_catalog = SkillCatalog()
+            return self.skill_catalog
+
+        self.skill_catalog = skill_manager.discover()
+        return self.skill_catalog
 
     def _dispatch_slash_command(self, user_input: str) -> SlashCommandResult | None:
         """Dispatch a slash command if the input is handled locally."""

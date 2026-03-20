@@ -5,6 +5,28 @@ You are working in: `{{ working_dir }}`
 
 All file paths should be relative to this directory.
 
+## Available Skills
+
+{% if skills %}
+The current workspace includes the following installed skills.
+When the user explicitly names one of them, or the request clearly matches its description,
+read that skill's `SKILL.md` with the file tools before proceeding and follow its workflow.
+
+Skill search roots:
+{% for root in skill_search_roots %}
+- `{{ root }}`
+{% endfor %}
+
+{% for skill in skills %}
+### {{ skill.name }}
+{{ skill.description }}
+Path: `{{ skill.path }}`
+
+{% endfor %}
+{% else %}
+No installed workspace skills were detected under the default skill roots.
+{% endif %}
+
 ## Available Tools
 
 You have access to the following tools:

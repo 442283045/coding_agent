@@ -11,6 +11,12 @@ from coding_agent.agent.slash_commands import (
     create_default_slash_command_registry,
 )
 from coding_agent.config import Settings
+from coding_agent.skills import SkillCatalog, SkillManager
+
+
+def _empty_skill_catalog() -> SkillCatalog:
+    """Return an empty skill catalog for slash-command tests."""
+    return SkillCatalog()
 
 
 def test_mcp_slash_command_adds_server_to_disk_and_reloads(tmp_path: Path) -> None:
@@ -31,6 +37,8 @@ def test_mcp_slash_command_adds_server_to_disk_and_reloads(tmp_path: Path) -> No
             working_dir=tmp_path,
             settings=app_settings,
             reload_mcp_tools=reload_mcp_tools,
+            list_skills=_empty_skill_catalog,
+            reload_skills=_empty_skill_catalog,
         ),
     )
 
@@ -57,6 +65,8 @@ def test_mcp_slash_command_updates_in_memory_json_override(tmp_path: Path) -> No
             working_dir=tmp_path,
             settings=app_settings,
             reload_mcp_tools=lambda: [],
+            list_skills=_empty_skill_catalog,
+            reload_skills=_empty_skill_catalog,
         ),
     )
 
@@ -85,6 +95,8 @@ def test_mcp_slash_command_lists_current_servers(tmp_path: Path) -> None:
             working_dir=tmp_path,
             settings=app_settings,
             reload_mcp_tools=lambda: [],
+            list_skills=_empty_skill_catalog,
+            reload_skills=_empty_skill_catalog,
         ),
     )
 
@@ -107,11 +119,12 @@ def test_slash_completer_suggests_top_level_commands() -> None:
         )
     )
 
-    assert [completion.display_text for completion in completions] == ["/mcp"]
+    assert [completion.display_text for completion in completions] == ["/mcp", "/skills"]
     assert (
         completions[0].display_meta_text
         == "Inspect, add, remove, and reload MCP server configuration."
     )
+    assert completions[1].display_meta_text == "Inspect and rescan installed workspace skills."
 
 
 def test_slash_completer_suggests_mcp_subcommands() -> None:
@@ -135,3 +148,49 @@ def test_slash_completer_suggests_mcp_subcommands() -> None:
         "rm",
         "reload",
     ]
+
+
+def test_skills_slash_command_lists_current_skills(tmp_path: Path) -> None:
+    """`/skills` should render the discovered workspace skills."""
+
+    skill_root = tmp_path / ".codex" / "skills" / "reviewer"
+    skill_root.mkdir(parents=True)
+    (skill_root / "SKILL.md").write_text(
+        "# Reviewer\n\nReview code changes for regressions.\n",
+        encoding="utf-8",
+    )
+
+    skill_manager = SkillManager(working_dir=tmp_path)
+    slash_commands = create_default_slash_command_registry()
+    app_settings = Settings(_env_file=None)
+
+    result = slash_commands.execute(
+        "/skills",
+        ctx=SlashCommandContext(
+            working_dir=tmp_path,
+            settings=app_settings,
+            reload_mcp_tools=lambda: [],
+            list_skills=skill_manager.discover,
+            reload_skills=skill_manager.discover,
+        ),
+    )
+
+    assert result is not None
+    assert "# Skills" in result.output
+    assert "Discovered skills: 1" in result.output
+    assert "`Reviewer`" in result.output
+
+
+def test_slash_completer_suggests_skills_subcommands() -> None:
+    """Typing `/skills ` should show candidate `/skills` actions."""
+
+    completions = (
+        create_default_slash_command_registry()
+        .build_completer()
+        .get_completions(
+            Document(text="/skills ", cursor_position=8),
+            CompleteEvent(completion_requested=False),
+        )
+    )
+
+    assert [completion.text for completion in completions] == ["list", "help", "reload"]

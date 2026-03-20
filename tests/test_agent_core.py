@@ -8,6 +8,7 @@ import pytest
 
 from coding_agent.agent.core import PROMPT_STYLE, Agent
 from coding_agent.agent.slash_commands import SlashCommandCompleter, SlashCommandResult
+from coding_agent.skills import SkillCatalog
 from coding_agent.tools.registry import ToolRegistry
 
 
@@ -101,6 +102,47 @@ def test_agent_configures_prompt_session_with_slash_completer(
     prompt_kwargs = captured["kwargs"]
     assert isinstance(prompt_kwargs["completer"], SlashCommandCompleter)
     assert prompt_kwargs["complete_while_typing"] is True
+
+
+def test_agent_load_system_prompt_includes_workspace_skills(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """The rendered system prompt should advertise discovered workspace skills."""
+
+    captured: dict[str, object] = {}
+    skill_dir = tmp_path / ".codex" / "skills" / "reviewer"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "# Reviewer\n\nReview code changes for regressions and missing tests.\n",
+        encoding="utf-8",
+    )
+
+    class FakeLLMClient:
+        def __init__(
+            self,
+            model: str | None = None,
+            debug: bool | None = None,
+            tool_registry: ToolRegistry | None = None,
+        ) -> None:
+            captured["tool_registry"] = tool_registry
+
+    class FakePromptSession:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            return None
+
+    monkeypatch.setattr("coding_agent.agent.core.LLMClient", FakeLLMClient)
+    monkeypatch.setattr("coding_agent.agent.core.PromptSession", FakePromptSession)
+    monkeypatch.setattr("coding_agent.agent.core.FileHistory", lambda *args, **kwargs: object())
+    monkeypatch.setattr("coding_agent.agent.core.AutoSuggestFromHistory", lambda: object())
+    monkeypatch.setattr(Agent, "_init_tools", lambda self: None)
+
+    agent = Agent(working_dir=str(tmp_path), model="gpt-4o-mini", debug=False)
+    prompt = agent._load_system_prompt()
+
+    assert "## Available Skills" in prompt
+    assert "Reviewer" in prompt
+    assert ".codex" in prompt
 
 
 def test_init_tools_reports_mcp_startup_success(monkeypatch) -> None:
@@ -475,6 +517,8 @@ def test_run_interactive_handles_slash_commands_locally(
     agent.session = FakeSession()
     agent.slash_commands = FakeSlashCommands()
     agent.working_dir = tmp_path
+    agent.skill_catalog = SkillCatalog()
+    agent.skill_manager = type("Manager", (), {"discover": lambda self: SkillCatalog()})()
 
     monkeypatch.setattr("coding_agent.agent.core.console.print", lambda *args, **kwargs: None)
     monkeypatch.setattr(
@@ -506,6 +550,8 @@ def test_run_once_returns_local_slash_command_output(tmp_path: Path) -> None:
     agent.working_dir = tmp_path
     agent.history = []
     agent.mcp_manager = type("Manager", (), {"enabled": False})()
+    agent.skill_catalog = SkillCatalog()
+    agent.skill_manager = type("Manager", (), {"discover": lambda self: SkillCatalog()})()
 
     result = Agent.run_once(agent, "/mcp")
 

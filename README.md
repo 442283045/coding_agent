@@ -6,6 +6,7 @@ AI-powered CLI coding assistant built with Python and uv.
 
 - 🤖 Multi-model LLM support (OpenAI, Anthropic, and more via LiteLLM)
 - 🛠️ Extensible tool system with built-in tools plus FastMCP-backed MCP servers
+- 🧠 Workspace skills discovery for project-local `SKILL.md` workflows
 - 🔍 Code search and analysis with Tree-sitter
 - 📝 File read/write with safety checks
 - 🔒 Secure shell command execution
@@ -113,6 +114,8 @@ Interactive mode also supports local slash commands:
 /mcp add filesystem {"command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","."]}
 /mcp remove filesystem
 /mcp reload
+/skills
+/skills reload
 ```
 
 Typing `/` in interactive mode will show slash command candidates automatically.
@@ -120,6 +123,9 @@ Typing `/` in interactive mode will show slash command candidates automatically.
 `mcp.json`, and reloads MCP tools into the current session immediately.
 When MCP servers are configured, startup also prints whether initialization succeeded and
 which MCP tools are available.
+`/skills` shows workspace-local installed skills discovered under `.coding-agent/skills`,
+`.codex/skills`, and `.agents/skills`. The system prompt also advertises those skills so
+the agent can inspect a matching `SKILL.md` on demand.
 
 ### Single command mode
 
