@@ -421,6 +421,7 @@ def test_process_message_streams_markdown_with_live(monkeypatch, tmp_path: Path)
     printed: list[str] = []
     markdown_updates: list[str] = []
     live_events: list[str] = []
+    loading_events: list[str] = []
 
     class FakeMarkdown:
         def __init__(self, content: str) -> None:
@@ -449,6 +450,10 @@ def test_process_message_streams_markdown_with_live(monkeypatch, tmp_path: Path)
         def stop(self) -> None:
             live_events.append("stop")
 
+    class FakeStatus:
+        def stop(self) -> None:
+            loading_events.append("stop")
+
     class FakeLLMClient:
         def set_log_path(self, log_path: Path) -> None:
             return None
@@ -461,12 +466,18 @@ def test_process_message_streams_markdown_with_live(monkeypatch, tmp_path: Path)
             on_content_chunk("好")
             return {"content": "你好", "tool_calls": []}
 
+    @contextmanager
+    def fake_loading(self: Agent, message: str):
+        loading_events.append(message)
+        yield FakeStatus()
+
     monkeypatch.setattr(
         "coding_agent.agent.core.console.print",
         lambda *args, **kwargs: printed.append(" ".join(str(arg) for arg in args)),
     )
     monkeypatch.setattr("coding_agent.agent.core.Markdown", FakeMarkdown)
     monkeypatch.setattr("coding_agent.agent.core.Live", FakeLive)
+    monkeypatch.setattr(Agent, "_loading_status", fake_loading)
     monkeypatch.setattr(
         Agent,
         "_display_response",
@@ -487,6 +498,7 @@ def test_process_message_streams_markdown_with_live(monkeypatch, tmp_path: Path)
     Agent._process_message(agent, "hello")
 
     assert any(line == "\n[bold blue]Agent:[/bold blue]" for line in printed)
+    assert loading_events == ["Thinking...", "stop"]
     assert markdown_updates == ["你", "你好"]
     assert live_events == ["init:你", "start", "update:你好", "stop"]
     assert not any(line.startswith("display:") for line in printed)

@@ -15,6 +15,7 @@ from prompt_toolkit.styles import Style
 from rich.console import Console
 from rich.live import Live
 from rich.markdown import Markdown
+from rich.status import Status
 
 from coding_agent.agent.slash_commands import (
     SlashCommandContext,
@@ -119,17 +120,17 @@ class Agent:
             llm.tool_registry = self.registry
 
     @contextmanager
-    def _loading_status(self, message: str) -> Iterator[None]:
+    def _loading_status(self, message: str) -> Iterator[Status | None]:
         """Show a terminal loading indicator for long-running user-visible work."""
         loading_depth = int(getattr(self, "_loading_depth", 0))
         self._loading_depth = loading_depth + 1
 
         try:
             if loading_depth > 0 or not console.is_terminal:
-                yield
+                yield None
             else:
-                with console.status(f"[bold cyan]{message}[/bold cyan]", spinner="dots"):
-                    yield
+                with console.status(f"[bold cyan]{message}[/bold cyan]", spinner="dots") as status:
+                    yield status
         finally:
             self._loading_depth = loading_depth
 
@@ -459,7 +460,15 @@ class Agent:
                 "content": "",
                 "started": False,
                 "live": None,
+                "thinking_status": None,
+                "thinking_active": False,
             }
+
+            def stop_thinking_status(state: dict[str, object] = stream_state) -> None:
+                thinking_status = state["thinking_status"]
+                if thinking_status is not None and bool(state["thinking_active"]):
+                    cast(Any, thinking_status).stop()
+                    state["thinking_active"] = False
 
             def on_content_chunk(
                 chunk: str,
@@ -469,6 +478,7 @@ class Agent:
                 renderable = Markdown(str(state["content"]))
 
                 if not bool(state["started"]):
+                    stop_thinking_status(state)
                     console.print("\n[bold blue]Agent:[/bold blue]")
                     live = Live(renderable, console=console, refresh_per_second=8, transient=False)
                     live.start()
@@ -480,18 +490,23 @@ class Agent:
                 if isinstance(current_live, Live):
                     current_live.update(renderable, refresh=True)
 
-            try:
-                response = self._run_async(
-                    self.llm.chat_with_tools(
-                        self._build_messages(),
-                        on_content_chunk=on_content_chunk,
+            with self._loading_status("Thinking...") as thinking_status:
+                stream_state["thinking_status"] = thinking_status
+                stream_state["thinking_active"] = thinking_status is not None
+
+                try:
+                    response = self._run_async(
+                        self.llm.chat_with_tools(
+                            self._build_messages(),
+                            on_content_chunk=on_content_chunk,
+                        )
                     )
-                )
-            finally:
-                current_live = cast(Live | None, stream_state["live"])
-                if isinstance(current_live, Live):
-                    current_live.stop()
-                    console.print()
+                finally:
+                    stop_thinking_status()
+                    current_live = cast(Live | None, stream_state["live"])
+                    if isinstance(current_live, Live):
+                        current_live.stop()
+                        console.print()
 
             content = str(response.get("content", ""))
             tool_calls = response.get("tool_calls", [])
@@ -660,7 +675,8 @@ class Agent:
 
             self.history.append({"role": "user", "content": prompt})
 
-            response = self._run_async(self.llm.chat_with_tools(self._build_messages()))
+            with self._loading_status("Thinking..."):
+                response = self._run_async(self.llm.chat_with_tools(self._build_messages()))
 
             content = str(response.get("content", ""))
             tool_calls = response.get("tool_calls", [])
@@ -704,7 +720,8 @@ class Agent:
                         }
                     )
 
-                response = self._run_async(self.llm.chat_with_tools(self._build_messages()))
+                with self._loading_status("Thinking..."):
+                    response = self._run_async(self.llm.chat_with_tools(self._build_messages()))
                 content = str(response.get("content", ""))
                 tool_calls = response.get("tool_calls", [])
                 reasoning_content = response.get("reasoning_content")

@@ -64,7 +64,7 @@ These instructions apply to the whole repository rooted here.
 
 - Preserve the Typer + Rich based CLI style already used in the repository.
 - Error messages should be actionable and concise.
-- Show a visible loading state for operations that may take noticeable time, especially tool execution and MCP configuration or reload flows.
+- Show a visible loading state for operations that may take noticeable time, especially model thinking before the first response token, tool execution, and MCP configuration or reload flows.
 - Do not silently weaken safety checks around shell execution or filesystem boundaries.
 
 ## Testing and Verification
