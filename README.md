@@ -54,6 +54,9 @@ AGENT_DEFAULT_MODEL=moonshot/kimi-k2.5
 Optional: configure MCP servers through `AGENT_MCP_SERVERS_JSON` or a JSON file at
 `~/.config/coding-agent/mcp.json`.
 
+If the default `mcp.json` does not exist yet, the agent creates it automatically with an
+empty `mcpServers` object.
+
 Example:
 
 ```json
@@ -102,6 +105,19 @@ Interactive responses stream by default.
 The startup banner shows `Workspace`, preserving the `-w/--workspace` value when provided.
 Tool invocations are announced in the console when they run.
 Responses are rendered as Markdown in the CLI.
+
+Interactive mode also supports local slash commands:
+
+```bash
+/mcp
+/mcp add filesystem {"command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","."]}
+/mcp remove filesystem
+/mcp reload
+```
+
+Typing `/` in interactive mode will show slash command candidates automatically.
+`/mcp` shows the effective MCP configuration, persists file-based changes to the active
+`mcp.json`, and reloads MCP tools into the current session immediately.
 
 ### Single command mode
 

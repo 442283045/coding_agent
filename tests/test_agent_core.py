@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from coding_agent.agent.core import PROMPT_STYLE, Agent
+from coding_agent.agent.slash_commands import SlashCommandCompleter, SlashCommandResult
 from coding_agent.tools.registry import ToolRegistry
 
 
@@ -62,6 +63,41 @@ def test_agent_passes_debug_flag_to_llm_client(monkeypatch, tmp_path: Path) -> N
     assert captured["debug"] is True
     assert isinstance(captured["tool_registry"], ToolRegistry)
     assert agent.llm is not None
+
+
+def test_agent_configures_prompt_session_with_slash_completer(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """Interactive sessions should enable slash completion while typing."""
+
+    captured: dict[str, object] = {}
+
+    class FakeLLMClient:
+        def __init__(
+            self,
+            model: str | None = None,
+            debug: bool | None = None,
+            tool_registry: ToolRegistry | None = None,
+        ) -> None:
+            return None
+
+    class FakePromptSession:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+
+    monkeypatch.setattr("coding_agent.agent.core.LLMClient", FakeLLMClient)
+    monkeypatch.setattr("coding_agent.agent.core.PromptSession", FakePromptSession)
+    monkeypatch.setattr("coding_agent.agent.core.FileHistory", lambda *args, **kwargs: object())
+    monkeypatch.setattr("coding_agent.agent.core.AutoSuggestFromHistory", lambda: object())
+    monkeypatch.setattr(Agent, "_init_tools", lambda self: None)
+
+    Agent(working_dir=str(tmp_path), model="gpt-4o-mini", debug=False)
+
+    prompt_kwargs = captured["kwargs"]
+    assert isinstance(prompt_kwargs["completer"], SlashCommandCompleter)
+    assert prompt_kwargs["complete_while_typing"] is True
 
 
 def test_interactive_session_creates_one_log_file_on_first_submission(
@@ -291,3 +327,65 @@ def test_execute_tool_prints_user_visible_status(monkeypatch, tmp_path: Path) ->
     assert result == "tool output"
     assert any(line.startswith("[dim]Calling tool list_directory: ") for line in printed)
     assert any(line == "[dim]Tool list_directory completed[/dim]" for line in printed)
+
+
+def test_run_interactive_handles_slash_commands_locally(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """Slash commands should bypass the LLM loop in interactive sessions."""
+
+    prompts = iter(["/mcp", "quit"])
+    displayed: list[str] = []
+    processed: list[str] = []
+
+    class FakeSession:
+        def prompt(self, *args: object, **kwargs: object) -> str:
+            return next(prompts)
+
+    class FakeSlashCommands:
+        def execute(self, user_input: str, *, ctx: object) -> SlashCommandResult | None:
+            if user_input == "/mcp":
+                return SlashCommandResult(output="mcp result")
+            return None
+
+    agent = Agent.__new__(Agent)
+    agent.session = FakeSession()
+    agent.slash_commands = FakeSlashCommands()
+    agent.working_dir = tmp_path
+
+    monkeypatch.setattr("coding_agent.agent.core.console.print", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        Agent,
+        "_display_slash_command_result",
+        lambda self, content: displayed.append(content),
+    )
+    monkeypatch.setattr(
+        Agent, "_process_message", lambda self, user_input: processed.append(user_input)
+    )
+
+    Agent.run_interactive(agent)
+
+    assert displayed == ["mcp result"]
+    assert processed == []
+
+
+def test_run_once_returns_local_slash_command_output(tmp_path: Path) -> None:
+    """Single-shot runs should resolve slash commands without calling the LLM."""
+
+    class FakeSlashCommands:
+        def execute(self, user_input: str, *, ctx: object) -> SlashCommandResult | None:
+            if user_input == "/mcp":
+                return SlashCommandResult(output="mcp result")
+            return None
+
+    agent = Agent.__new__(Agent)
+    agent.slash_commands = FakeSlashCommands()
+    agent.working_dir = tmp_path
+    agent.history = []
+    agent.mcp_manager = type("Manager", (), {"enabled": False})()
+
+    result = Agent.run_once(agent, "/mcp")
+
+    assert result == "mcp result"
+    assert agent.history == []

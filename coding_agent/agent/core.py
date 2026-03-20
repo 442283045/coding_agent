@@ -14,6 +14,11 @@ from rich.console import Console
 from rich.live import Live
 from rich.markdown import Markdown
 
+from coding_agent.agent.slash_commands import (
+    SlashCommandContext,
+    SlashCommandResult,
+    create_default_slash_command_registry,
+)
 from coding_agent.config import settings
 from coding_agent.llm.client import LLMClient
 from coding_agent.mcp import MCPManager
@@ -39,6 +44,7 @@ class Agent:
         self._interaction_log_path: Path | None = None
         self.registry: ToolRegistry = ToolRegistry()
         self.mcp_manager = MCPManager(settings.load_mcp_servers())
+        self.slash_commands = create_default_slash_command_registry()
 
         # Initialize tool context
         self.tool_context = {
@@ -56,23 +62,76 @@ class Agent:
         self.session: PromptSession[str] = PromptSession(
             history=FileHistory(str(history_file)),
             auto_suggest=AutoSuggestFromHistory(),
+            completer=self.slash_commands.build_completer(),
+            complete_while_typing=True,
         )
 
-    def _init_tools(self) -> None:
-        """Initialize and register all tools."""
+    def _build_base_registry(self) -> ToolRegistry:
+        """Build a fresh registry containing only the built-in local tools."""
         # Import tools to trigger registration
         from coding_agent.tools import code_tools, file_tools, shell_tools
 
         _ = (code_tools, file_tools, shell_tools)
-        self.registry = registry.copy()
-        if self.mcp_manager.enabled:
-            import asyncio
+        return registry.copy()
 
-            asyncio.run(self.mcp_manager.start(self.registry))
+    def _start_mcp_manager(
+        self,
+        mcp_manager: MCPManager,
+        tool_registry: ToolRegistry,
+    ) -> list[str]:
+        """Start an MCP manager against a specific tool registry."""
+        if not mcp_manager.enabled:
+            return []
 
+        import asyncio
+
+        return asyncio.run(mcp_manager.start(tool_registry))
+
+    def _sync_llm_tool_registry(self) -> None:
+        """Keep the LLM client pointed at the active tool registry."""
+        llm = getattr(self, "llm", None)
+        if llm is not None:
+            llm.tool_registry = self.registry
+
+    def _log_loaded_tools(self) -> None:
+        """Emit a debug summary of the active tool set."""
         if self.debug:
             tools = self.registry.list_tools()
             console.print(f"[dim]Loaded {len(tools)} tools[/dim]")
+
+    def _init_tools(self) -> None:
+        """Initialize and register all tools."""
+        self.registry = self._build_base_registry()
+        self._start_mcp_manager(self.mcp_manager, self.registry)
+        self._sync_llm_tool_registry()
+        self._log_loaded_tools()
+
+    def reload_mcp_tools(self) -> list[str]:
+        """Reload MCP servers without dropping the current session on failure."""
+        next_registry = self._build_base_registry()
+        next_manager = MCPManager(settings.load_mcp_servers())
+
+        try:
+            registered_names = self._start_mcp_manager(next_manager, next_registry)
+        except Exception:
+            if next_manager.enabled:
+                import asyncio
+
+                asyncio.run(next_manager.close())
+            raise
+
+        previous_manager = self.mcp_manager
+        self.registry = next_registry
+        self.mcp_manager = next_manager
+        self._sync_llm_tool_registry()
+
+        if previous_manager.enabled:
+            import asyncio
+
+            asyncio.run(previous_manager.close())
+
+        self._log_loaded_tools()
+        return registered_names
 
     def _load_system_prompt(self) -> str:
         """Load and render system prompt template."""
@@ -136,6 +195,33 @@ class Agent:
         console.print(f"[dim]LLM log file: {log_path}[/dim]")
         return log_path
 
+    def _build_slash_command_context(self) -> SlashCommandContext:
+        """Build the runtime context passed to slash commands."""
+        return SlashCommandContext(
+            working_dir=self.working_dir,
+            settings=settings,
+            reload_mcp_tools=self.reload_mcp_tools,
+        )
+
+    def _dispatch_slash_command(self, user_input: str) -> SlashCommandResult | None:
+        """Dispatch a slash command if the input is handled locally."""
+        slash_commands = getattr(self, "slash_commands", None)
+        if slash_commands is None:
+            return None
+
+        return cast(
+            SlashCommandResult | None,
+            slash_commands.execute(
+                user_input,
+                ctx=self._build_slash_command_context(),
+            ),
+        )
+
+    def _display_slash_command_result(self, content: str) -> None:
+        """Render local slash command output in the terminal."""
+        console.print("\n[bold cyan]Command:[/bold cyan]")
+        console.print(Markdown(content))
+
     def run_interactive(self) -> None:
         """Run interactive chat session."""
         while True:
@@ -152,6 +238,11 @@ class Agent:
                 if user_input.lower() in ("exit", "quit", "q"):
                     console.print("[yellow]Goodbye![/yellow]")
                     break
+
+                slash_result = self._dispatch_slash_command(user_input)
+                if slash_result is not None:
+                    self._display_slash_command_result(slash_result.output)
+                    continue
 
                 # Process the message
                 self._process_message(user_input)
@@ -355,6 +446,10 @@ class Agent:
     def run_once(self, prompt: str) -> str:
         """Execute a single prompt and return the result."""
         try:
+            slash_result = self._dispatch_slash_command(prompt)
+            if slash_result is not None:
+                return slash_result.output
+
             self.history.append({"role": "user", "content": prompt})
 
             import asyncio

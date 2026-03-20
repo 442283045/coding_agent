@@ -1,6 +1,7 @@
 """Configuration management using Pydantic Settings."""
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -85,13 +86,36 @@ class Settings(BaseSettings):
         """Get the default MCP config file path."""
         return self.config_dir / "mcp.json"
 
+    @property
+    def effective_mcp_config_path(self) -> Path:
+        """Get the MCP config file path used for on-disk persistence."""
+        return (self.mcp_config_path or self.default_mcp_config_path).resolve()
+
+    def ensure_default_mcp_config_file(self) -> Path:
+        """Create the default MCP config file when it does not already exist."""
+        config_path = self.default_mcp_config_path.resolve()
+        if config_path.exists():
+            return config_path
+
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = MCPServersFile.model_validate({"mcpServers": {}})
+        config_path.write_text(
+            payload.model_dump_json(by_alias=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        return config_path
+
     def load_mcp_servers(self) -> dict[str, MCPServerConfig]:
         """Load MCP server configuration from env or disk."""
         if self.mcp_servers_json:
             raw_config = json.loads(self.mcp_servers_json)
             return MCPServersFile.model_validate(raw_config).mcp_servers
 
-        config_path = self.mcp_config_path or self.default_mcp_config_path
+        config_path = (
+            self.ensure_default_mcp_config_file()
+            if self.mcp_config_path is None
+            else self.effective_mcp_config_path
+        )
         if not config_path.exists():
             return {}
 
@@ -105,6 +129,24 @@ class Settings(BaseSettings):
     def ensure_config_dir(self) -> None:
         """Ensure configuration directory exists."""
         self.config_dir.mkdir(parents=True, exist_ok=True)
+        if self.mcp_config_path is None and self.mcp_servers_json is None:
+            self.ensure_default_mcp_config_file()
+
+    def save_mcp_servers(self, servers: Mapping[str, MCPServerConfig]) -> Path:
+        """Persist MCP server configuration to disk."""
+        config_path = self.effective_mcp_config_path
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = MCPServersFile.model_validate({"mcpServers": dict(servers)})
+        config_path.write_text(
+            payload.model_dump_json(by_alias=True, indent=2),
+            encoding="utf-8",
+        )
+        return config_path
+
+    def update_mcp_servers_json(self, servers: Mapping[str, MCPServerConfig]) -> None:
+        """Update the in-memory JSON override for MCP servers."""
+        payload = MCPServersFile.model_validate({"mcpServers": dict(servers)})
+        self.mcp_servers_json = payload.model_dump_json(by_alias=True, indent=2)
 
 
 class MCPServerConfig(BaseModel):
