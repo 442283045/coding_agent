@@ -93,7 +93,7 @@ async def execute_shell(
                 process.communicate(),
                 timeout=timeout,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             process.kill()
             await process.wait()
             return f"Error: Command timed out after {timeout} seconds"

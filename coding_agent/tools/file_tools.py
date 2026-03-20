@@ -65,7 +65,10 @@ async def read_file(
     # Check file size
     file_size = file_path.stat().st_size
     if file_size > settings.max_file_size:
-        return f"Error: File '{path}' is too large ({file_size} bytes > {settings.max_file_size} bytes)."
+        return (
+            f"Error: File '{path}' is too large "
+            f"({file_size} bytes > {settings.max_file_size} bytes)."
+        )
 
     try:
         content = file_path.read_text(encoding="utf-8")
@@ -268,7 +271,7 @@ async def grep_search(
                     rel_path = file_path.relative_to(working_dir)
                     matches.append(f"📄 {rel_path}\n" + "\n".join(file_matches))
 
-            except (UnicodeDecodeError, Exception):
+            except UnicodeDecodeError, Exception:
                 continue
 
         if not matches:

@@ -126,13 +126,12 @@ def _run_interactive_session(
     )
     console.print()
 
-    # Initialize and run agent
+    agent = Agent(
+        working_dir=str(working_dir),
+        model=model,
+        debug=debug,
+    )
     try:
-        agent = Agent(
-            working_dir=str(working_dir),
-            model=model,
-            debug=debug,
-        )
         agent.run_interactive()
     except KeyboardInterrupt:
         console.print("\n[yellow]Session interrupted. Goodbye![/yellow]")
@@ -141,6 +140,10 @@ def _run_interactive_session(
         if debug:
             raise
         raise typer.Exit(1) from e
+    finally:
+        close = getattr(agent, "close", None)
+        if callable(close):
+            close()
 
 
 def _get_workspace_display(

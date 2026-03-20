@@ -14,7 +14,7 @@ def _get_working_dir(ctx: dict[str, Any] | None) -> Path:
     return Path.cwd()
 
 
-def _get_tree_sitter_parser(file_path: Path):
+def _get_tree_sitter_parser(file_path: Path) -> Any | None:
     """Get appropriate tree-sitter parser for file type."""
     try:
         from tree_sitter import Language, Parser
@@ -103,7 +103,7 @@ async def get_file_summary(
 
         results = []
 
-        def traverse(node, depth=0):
+        def traverse(node: Any, depth: int = 0) -> None:
             indent = "  " * depth
 
             if node.type in ("function_definition", "function_declaration"):
@@ -196,7 +196,7 @@ async def find_symbol(
                         rel_path = file_path.relative_to(working_dir)
                         matches.append(f"📄 {rel_path}:{i}: {line.strip()}")
 
-            except (UnicodeDecodeError, Exception):
+            except UnicodeDecodeError, Exception:
                 continue
 
         if not matches:
@@ -236,8 +236,8 @@ async def get_function_code(
     # Find function definition
     func_pattern = rf"^(\s*)(def|class)\s+{re.escape(function_name)}\b"
 
-    start_line = None
-    base_indent = None
+    start_line: int | None = None
+    base_indent: int | None = None
 
     for i, line in enumerate(lines):
         match = re.match(func_pattern, line)
@@ -264,7 +264,7 @@ async def get_function_code(
         current_indent = len(line) - len(line.lstrip())
 
         # If we hit a line with same or less indentation, it's a new top-level definition
-        if current_indent <= base_indent and line.strip():
+        if base_indent is not None and current_indent <= base_indent and line.strip():
             break
 
         end_line = i + 1

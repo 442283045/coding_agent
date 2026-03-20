@@ -16,7 +16,8 @@ from rich.markdown import Markdown
 
 from coding_agent.config import settings
 from coding_agent.llm.client import LLMClient
-from coding_agent.tools.registry import registry
+from coding_agent.mcp import MCPManager
+from coding_agent.tools.registry import ToolRegistry, registry
 
 console = Console()
 PROMPT_STYLE = Style.from_dict({"prompt": "bold green"})
@@ -34,9 +35,10 @@ class Agent:
         self.working_dir = Path(working_dir).resolve()
         self.model = model or settings.default_model
         self.debug = debug
-        self.llm = LLMClient(model=self.model, debug=debug)
         self.history: list[dict[str, Any]] = []
         self._interaction_log_path: Path | None = None
+        self.registry: ToolRegistry = ToolRegistry()
+        self.mcp_manager = MCPManager(settings.load_mcp_servers())
 
         # Initialize tool context
         self.tool_context = {
@@ -46,6 +48,7 @@ class Agent:
 
         # Initialize tools
         self._init_tools()
+        self.llm = LLMClient(model=self.model, debug=debug, tool_registry=self.registry)
 
         # Setup prompt session with history
         settings.ensure_config_dir()
@@ -61,9 +64,14 @@ class Agent:
         from coding_agent.tools import code_tools, file_tools, shell_tools
 
         _ = (code_tools, file_tools, shell_tools)
+        self.registry = registry.copy()
+        if self.mcp_manager.enabled:
+            import asyncio
+
+            asyncio.run(self.mcp_manager.start(self.registry))
 
         if self.debug:
-            tools = registry.list_tools()
+            tools = self.registry.list_tools()
             console.print(f"[dim]Loaded {len(tools)} tools[/dim]")
 
     def _load_system_prompt(self) -> str:
@@ -74,7 +82,7 @@ class Agent:
             template = Template(prompt_path.read_text())
             return template.render(
                 working_dir=str(self.working_dir),
-                tools=registry.list_tools(),
+                tools=self.registry.list_tools(),
             )
 
         # Fallback system prompt
@@ -297,7 +305,7 @@ class Agent:
     def _execute_tool(self, tool_call: dict[str, Any]) -> str:
         """Execute a tool call."""
         tool_name = tool_call["name"]
-        tool = registry.get(tool_name)
+        tool = self.registry.get(tool_name)
 
         if not tool:
             return f"Error: Tool '{tool_name}' not found."
@@ -335,64 +343,72 @@ class Agent:
         console.print("\n[bold blue]Agent:[/bold blue]")
         console.print(Markdown(content))
 
-    def run_once(self, prompt: str) -> str:
-        """Execute a single prompt and return the result."""
-        self.history.append({"role": "user", "content": prompt})
+    def close(self) -> None:
+        """Close session-scoped resources like MCP clients."""
+        if not self.mcp_manager.enabled:
+            return
 
         import asyncio
 
-        response = asyncio.run(self.llm.chat_with_tools(self._build_messages()))
+        asyncio.run(self.mcp_manager.close())
 
-        content = str(response.get("content", ""))
-        tool_calls = response.get("tool_calls", [])
-        reasoning_content = response.get("reasoning_content")
+    def run_once(self, prompt: str) -> str:
+        """Execute a single prompt and return the result."""
+        try:
+            self.history.append({"role": "user", "content": prompt})
 
-        max_iterations = settings.max_iterations
-        iteration = 0
+            import asyncio
 
-        while tool_calls and iteration < max_iterations:
-            iteration += 1
-
-            # Add assistant message
-            assistant_message: dict[str, Any] = {
-                "role": "assistant",
-                "content": content,
-                "tool_calls": [
-                    {
-                        "id": tc["id"],
-                        "type": "function",
-                        "function": {
-                            "name": tc["name"],
-                            "arguments": tc["arguments"],
-                        },
-                    }
-                    for tc in tool_calls
-                ],
-            }
-            if isinstance(reasoning_content, str) and reasoning_content:
-                assistant_message["reasoning_content"] = reasoning_content
-            self.history.append(assistant_message)
-
-            # Execute tools
-            for tool_call in tool_calls:
-                result = self._execute_tool(tool_call)
-                self.history.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call["id"],
-                        "content": result,
-                    }
-                )
-
-            # Get next response
             response = asyncio.run(self.llm.chat_with_tools(self._build_messages()))
+
             content = str(response.get("content", ""))
             tool_calls = response.get("tool_calls", [])
             reasoning_content = response.get("reasoning_content")
 
-        # Final response
-        final_message: dict[str, Any] = {"role": "assistant", "content": content}
-        if isinstance(reasoning_content, str) and reasoning_content:
-            final_message["reasoning_content"] = reasoning_content
-        self.history.append(final_message)
-        return content
+            max_iterations = settings.max_iterations
+            iteration = 0
+
+            while tool_calls and iteration < max_iterations:
+                iteration += 1
+
+                assistant_message: dict[str, Any] = {
+                    "role": "assistant",
+                    "content": content,
+                    "tool_calls": [
+                        {
+                            "id": tc["id"],
+                            "type": "function",
+                            "function": {
+                                "name": tc["name"],
+                                "arguments": tc["arguments"],
+                            },
+                        }
+                        for tc in tool_calls
+                    ],
+                }
+                if isinstance(reasoning_content, str) and reasoning_content:
+                    assistant_message["reasoning_content"] = reasoning_content
+                self.history.append(assistant_message)
+
+                for tool_call in tool_calls:
+                    result = self._execute_tool(tool_call)
+                    self.history.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call["id"],
+                            "content": result,
+                        }
+                    )
+
+                response = asyncio.run(self.llm.chat_with_tools(self._build_messages()))
+                content = str(response.get("content", ""))
+                tool_calls = response.get("tool_calls", [])
+                reasoning_content = response.get("reasoning_content")
+
+            final_message: dict[str, Any] = {"role": "assistant", "content": content}
+            if isinstance(reasoning_content, str) and reasoning_content:
+                final_message["reasoning_content"] = reasoning_content
+            self.history.append(final_message)
+            return content
+        finally:
+            self.close()

@@ -5,7 +5,7 @@ AI-powered CLI coding assistant built with Python and uv.
 ## Features
 
 - 🤖 Multi-model LLM support (OpenAI, Anthropic, and more via LiteLLM)
-- 🛠️ Extensible tool system with MCP compatibility
+- 🛠️ Extensible tool system with built-in tools plus FastMCP-backed MCP servers
 - 🔍 Code search and analysis with Tree-sitter
 - 📝 File read/write with safety checks
 - 🔒 Secure shell command execution
@@ -50,6 +50,25 @@ MOONSHOT_API_KEY=your_moonshot_key
 MOONSHOT_API_BASE=https://api.moonshot.cn/v1
 AGENT_DEFAULT_MODEL=moonshot/kimi-k2.5
 ```
+
+Optional: configure MCP servers through `AGENT_MCP_SERVERS_JSON` or a JSON file at
+`~/.config/coding-agent/mcp.json`.
+
+Example:
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]
+    }
+  }
+}
+```
+
+MCP tools are registered into the runtime tool registry with namespaced names such as
+`mcp__filesystem__read_file`.
 
 ## Usage
 

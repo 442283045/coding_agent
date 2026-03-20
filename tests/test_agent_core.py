@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from coding_agent.agent.core import PROMPT_STYLE, Agent
+from coding_agent.tools.registry import ToolRegistry
 
 
 def test_run_interactive_uses_prompt_toolkit_style(monkeypatch) -> None:
@@ -35,9 +36,15 @@ def test_agent_passes_debug_flag_to_llm_client(monkeypatch, tmp_path: Path) -> N
     captured: dict[str, object] = {}
 
     class FakeLLMClient:
-        def __init__(self, model: str | None = None, debug: bool | None = None) -> None:
+        def __init__(
+            self,
+            model: str | None = None,
+            debug: bool | None = None,
+            tool_registry: ToolRegistry | None = None,
+        ) -> None:
             captured["model"] = model
             captured["debug"] = debug
+            captured["tool_registry"] = tool_registry
 
     class FakePromptSession:
         def __init__(self, *args: object, **kwargs: object) -> None:
@@ -51,7 +58,9 @@ def test_agent_passes_debug_flag_to_llm_client(monkeypatch, tmp_path: Path) -> N
 
     agent = Agent(working_dir=str(tmp_path), model="gpt-4o-mini", debug=True)
 
-    assert captured == {"model": "gpt-4o-mini", "debug": True}
+    assert captured["model"] == "gpt-4o-mini"
+    assert captured["debug"] is True
+    assert isinstance(captured["tool_registry"], ToolRegistry)
     assert agent.llm is not None
 
 
@@ -92,6 +101,7 @@ def test_interactive_session_creates_one_log_file_on_first_submission(
     agent.debug = False
     agent.llm = FakeLLMClient()
     agent.history = []
+    agent.registry = ToolRegistry()
     agent.tool_context = {"working_dir": str(tmp_path), "debug": False}
     agent._interaction_log_path = None
 
@@ -181,6 +191,7 @@ def test_process_message_streams_markdown_with_live(monkeypatch, tmp_path: Path)
     agent.debug = False
     agent.llm = FakeLLMClient()
     agent.history = []
+    agent.registry = ToolRegistry()
     agent.tool_context = {"working_dir": str(tmp_path), "debug": False}
     agent._interaction_log_path = None
 
@@ -240,6 +251,7 @@ def test_process_message_preserves_reasoning_content_for_tool_calls(
     agent.debug = False
     agent.llm = FakeLLMClient()
     agent.history = []
+    agent.registry = ToolRegistry()
     agent.tool_context = {"working_dir": str(tmp_path), "debug": False}
     agent._interaction_log_path = None
 
@@ -258,13 +270,13 @@ def test_execute_tool_prints_user_visible_status(monkeypatch, tmp_path: Path) ->
         async def execute(self, **kwargs: Any) -> str:
             return "tool output"
 
-    monkeypatch.setattr("coding_agent.agent.core.registry.get", lambda name: FakeTool())
     monkeypatch.setattr(
         "coding_agent.agent.core.console.print",
         lambda *args, **kwargs: printed.append(" ".join(str(arg) for arg in args)),
     )
 
     agent = Agent.__new__(Agent)
+    agent.registry = type("Registry", (), {"get": lambda self, name: FakeTool()})()
     agent.tool_context = {"working_dir": str(tmp_path), "debug": False}
     agent.debug = False
 

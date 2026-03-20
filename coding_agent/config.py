@@ -1,10 +1,11 @@
 """Configuration management using Pydantic Settings."""
 
+import json
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 from platformdirs import user_config_dir
-from pydantic import Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -29,6 +30,7 @@ class Settings(BaseSettings):
         env_prefix="AGENT_",
         case_sensitive=False,
         extra="ignore",
+        populate_by_name=True,
     )
 
     # LLM API Keys
@@ -51,6 +53,8 @@ class Settings(BaseSettings):
 
     # Debug
     debug: bool = Field(default=False)
+    mcp_servers_json: str | None = Field(default=None, alias="MCP_SERVERS_JSON")
+    mcp_config_path: Path | None = Field(default=None, alias="MCP_CONFIG_PATH")
 
     @field_validator("allowed_shell_commands", mode="before")
     @classmethod
@@ -76,9 +80,91 @@ class Settings(BaseSettings):
         """Get path to conversation history file."""
         return self.config_dir / "history.json"
 
+    @property
+    def default_mcp_config_path(self) -> Path:
+        """Get the default MCP config file path."""
+        return self.config_dir / "mcp.json"
+
+    def load_mcp_servers(self) -> dict[str, MCPServerConfig]:
+        """Load MCP server configuration from env or disk."""
+        if self.mcp_servers_json:
+            raw_config = json.loads(self.mcp_servers_json)
+            return MCPServersFile.model_validate(raw_config).mcp_servers
+
+        config_path = self.mcp_config_path or self.default_mcp_config_path
+        if not config_path.exists():
+            return {}
+
+        content = config_path.read_text(encoding="utf-8").strip()
+        if not content:
+            return {}
+
+        raw_config = json.loads(content)
+        return MCPServersFile.model_validate(raw_config).mcp_servers
+
     def ensure_config_dir(self) -> None:
         """Ensure configuration directory exists."""
         self.config_dir.mkdir(parents=True, exist_ok=True)
+
+
+class MCPServerConfig(BaseModel):
+    """Configuration for a single MCP server."""
+
+    transport: str | None = None
+    command: str | None = None
+    args: list[str] = Field(default_factory=list)
+    env: dict[str, Any] = Field(default_factory=dict)
+    cwd: str | None = None
+    url: str | None = None
+    headers: dict[str, str] = Field(default_factory=dict)
+    auth: str | None = None
+    timeout: int | None = None
+    description: str | None = None
+    icon: str | None = None
+    keep_alive: bool | None = None
+    sse_read_timeout: int | float | None = None
+
+    @model_validator(mode="after")
+    def validate_transport(self) -> MCPServerConfig:
+        """Validate that the server shape matches its transport."""
+        if self.command:
+            if self.transport is None:
+                self.transport = "stdio"
+            if self.transport != "stdio":
+                raise ValueError("command-based MCP servers must use the 'stdio' transport")
+            return self
+
+        if self.url:
+            if self.transport is None:
+                self.transport = "streamable-http"
+            if self.transport not in {"http", "streamable-http", "sse"}:
+                raise ValueError("remote MCP servers must use http, streamable-http, or sse")
+            return self
+
+        raise ValueError("MCP server config must define either 'command' or 'url'")
+
+    def to_fastmcp_config(self) -> dict[str, Any]:
+        """Convert to the config shape accepted by FastMCP Client."""
+        data = self.model_dump(exclude_none=True)
+        if self.command:
+            data["transport"] = "stdio"
+        return data
+
+
+class MCPServersFile(BaseModel):
+    """Container for MCP server configuration files."""
+
+    mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict, alias="mcpServers")
+
+    model_config = {"populate_by_name": True}
+
+    @model_validator(mode="before")
+    @classmethod
+    def wrap_root_servers(cls, value: Any) -> Any:
+        """Allow either {'mcpServers': ...} or a bare server mapping."""
+        if isinstance(value, dict) and "mcpServers" not in value:
+            return {"mcpServers": value}
+        return value
 
 
 # Global settings instance

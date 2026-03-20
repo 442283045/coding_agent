@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from coding_agent.llm.client import LLMClient
+from coding_agent.tools.registry import Tool, ToolRegistry
 
 
 def _build_response(
@@ -156,6 +157,32 @@ def test_handle_response_preserves_reasoning_content() -> None:
 
     assert result["content"] == "done"
     assert result["reasoning_content"] == "thought process"
+
+
+def test_llm_client_uses_instance_tool_registry() -> None:
+    """Each LLM client should read tools from its injected registry."""
+
+    async def execute_tool(**kwargs: object) -> str:
+        return "ok"
+
+    tool_registry = ToolRegistry()
+    tool_registry.register(
+        Tool(
+            name="mcp__filesystem__read_file",
+            description="Read from MCP filesystem",
+            func=execute_tool,
+            input_schema={"type": "object", "properties": {"path": {"type": "string"}}},
+            source="mcp",
+        )
+    )
+
+    client = LLMClient(model="gpt-4o-mini", debug=False, tool_registry=tool_registry)
+    request = client._build_completion_request(
+        [{"role": "user", "content": "hello"}],
+        stream=False,
+    )
+
+    assert request["tools"][0]["function"]["name"] == "mcp__filesystem__read_file"
 
 
 @pytest.mark.asyncio

@@ -12,7 +12,7 @@ import litellm
 from rich.console import Console
 
 from coding_agent.config import normalize_model_name, settings
-from coding_agent.tools.registry import registry
+from coding_agent.tools.registry import ToolRegistry, registry
 
 console = Console()
 
@@ -131,11 +131,17 @@ class _LLMInteractionLogger:
 class LLMClient:
     """Unified client for LLM interactions."""
 
-    def __init__(self, model: str | None = None, debug: bool | None = None):
+    def __init__(
+        self,
+        model: str | None = None,
+        debug: bool | None = None,
+        tool_registry: ToolRegistry | None = None,
+    ):
         self.model = normalize_model_name(model or settings.default_model)
         self.max_tokens = settings.max_tokens
         self.temperature = settings.temperature
         self.debug = settings.debug if debug is None else debug
+        self.tool_registry = tool_registry or registry
         self._logger = _LLMInteractionLogger(enabled=self.debug)
 
         # Configure litellm
@@ -160,8 +166,8 @@ class LLMClient:
         model_lower = self.model.lower()
 
         if "claude" in model_lower:
-            return registry.list_anthropic_tools()
-        return registry.list_openai_tools()
+            return self.tool_registry.list_anthropic_tools()
+        return self.tool_registry.list_openai_tools()
 
     def _build_completion_request(
         self,
