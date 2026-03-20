@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from coding_agent.llm.client import LLMClient
+from coding_agent.llm.runtime import configure_litellm_runtime_env
 from coding_agent.tools.registry import Tool, ToolRegistry
 
 
@@ -142,6 +143,15 @@ def test_llm_client_uses_supported_temperature_for_kimi_k25() -> None:
     )
 
     assert request["temperature"] == 1.0
+
+
+def test_configure_litellm_runtime_env_forces_local_model_cost_map(monkeypatch) -> None:
+    """LiteLLM should be forced to use the bundled local model cost map."""
+    monkeypatch.delenv("LITELLM_LOCAL_MODEL_COST_MAP", raising=False)
+
+    configure_litellm_runtime_env()
+
+    assert os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] == "true"
 
 
 def test_handle_response_preserves_reasoning_content() -> None:

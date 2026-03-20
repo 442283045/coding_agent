@@ -8,10 +8,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-import litellm
 from rich.console import Console
 
 from coding_agent.config import normalize_model_name, settings
+from coding_agent.llm.runtime import litellm
 from coding_agent.tools.registry import ToolRegistry, registry
 
 console = Console()
@@ -145,7 +145,7 @@ class LLMClient:
         self._logger = _LLMInteractionLogger(enabled=self.debug)
 
         # Configure litellm
-        litellm.set_verbose = self.debug  # type: ignore[attr-defined]
+        litellm.set_verbose = self.debug
 
         # Set API keys
         if settings.openai_api_key:
