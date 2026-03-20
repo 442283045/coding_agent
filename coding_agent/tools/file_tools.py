@@ -37,6 +37,34 @@ def _is_path_safe(path: Path, working_dir: Path) -> bool:
         return False
 
 
+def _detect_newline(content: str) -> str:
+    """Detect the dominant newline style for a text buffer."""
+    if "\r\n" in content:
+        return "\r\n"
+    if "\r" in content:
+        return "\r"
+    return "\n"
+
+
+def _normalize_patch_content(
+    new_content: str,
+    *,
+    newline: str,
+    has_suffix: bool,
+) -> str:
+    """Normalize replacement content while preserving line boundaries."""
+    if not new_content:
+        return ""
+
+    normalized = new_content.replace("\r\n", "\n").replace("\r", "\n")
+    replacement = normalized.replace("\n", newline)
+
+    if has_suffix and not replacement.endswith(newline):
+        replacement += newline
+
+    return replacement
+
+
 @registry.tool(
     name="read_file",
     description="Read the contents of a file. Returns the file content as a string. "
@@ -150,6 +178,82 @@ async def append_file(
         return f"Successfully appended {len(content)} characters to '{path}'."
     except Exception as e:
         return f"Error appending file: {e}"
+
+
+@registry.tool(
+    name="patch_file",
+    description="Replace a contiguous inclusive line range in an existing text file "
+    "without rewriting the whole file. Read the relevant lines first with read_file, "
+    "then patch only that region. Use an empty new_content string to delete the range.",
+)
+async def patch_file(
+    path: str,
+    start_line: int,
+    end_line: int,
+    new_content: str,
+    ctx: dict[str, Any] | None = None,
+) -> str:
+    """Replace a line range in a text file."""
+    working_dir = _get_working_dir(ctx)
+    file_path = (working_dir / path).resolve()
+
+    if not _is_path_safe(file_path, working_dir):
+        return f"Error: Access denied. Path '{path}' is outside working directory."
+
+    if not file_path.exists():
+        return f"Error: File '{path}' not found."
+
+    if not file_path.is_file():
+        return f"Error: '{path}' is not a file."
+
+    if start_line < 1:
+        return "Error: start_line must be at least 1."
+
+    if end_line < start_line:
+        return "Error: end_line must be greater than or equal to start_line."
+
+    file_size = file_path.stat().st_size
+    if file_size > settings.max_file_size:
+        return (
+            f"Error: File '{path}' is too large "
+            f"({file_size} bytes > {settings.max_file_size} bytes)."
+        )
+
+    try:
+        content = file_path.read_text(encoding="utf-8", newline="")
+        lines = content.splitlines(keepends=True)
+
+        if not lines:
+            return f"Error: File '{path}' is empty. Use write_file to create new content."
+
+        if end_line > len(lines):
+            return (
+                f"Error: Line range {start_line}-{end_line} is outside "
+                f"'{path}' ({len(lines)} lines)."
+            )
+
+        newline = _detect_newline(content)
+        prefix = "".join(lines[: start_line - 1])
+        suffix = "".join(lines[end_line:])
+        replacement = _normalize_patch_content(
+            new_content,
+            newline=newline,
+            has_suffix=bool(suffix),
+        )
+        updated_content = f"{prefix}{replacement}{suffix}"
+
+        file_path.write_text(updated_content, encoding="utf-8", newline="")
+
+        replacement_lines = 0 if not replacement else len(replacement.splitlines())
+        replaced_line_count = end_line - start_line + 1
+        return (
+            f"Successfully patched '{path}' replacing lines {start_line}-{end_line} "
+            f"({replaced_line_count} line(s)) with {replacement_lines} line(s)."
+        )
+    except UnicodeDecodeError:
+        return f"Error: File '{path}' is not a text file."
+    except Exception as e:
+        return f"Error patching file: {e}"
 
 
 @registry.tool(

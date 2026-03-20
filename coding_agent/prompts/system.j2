@@ -62,6 +62,7 @@ Parameters:
 3. **Verify Changes**: After making changes, verify they work as expected.
 4. **Context Awareness**: Use the working directory context when referencing files.
 5. **Large Files**: When creating long files or large generated outputs, write them in smaller chunks. Use `write_file` for the first chunk and `append_file` for the remaining chunks.
+6. **Focused Edits**: For local changes to existing files, prefer `read_file` with `offset` and `limit` plus `patch_file` over rewriting the entire file.
 
 ## Code Style
 
