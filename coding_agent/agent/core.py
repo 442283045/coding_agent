@@ -1,7 +1,8 @@
 """Core agent implementation with ReAct loop."""
 
 import json
-from collections.abc import Awaitable, Sequence
+from collections.abc import Awaitable, Iterator, Sequence
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any, TypeVar, cast
@@ -47,6 +48,7 @@ class Agent:
         self.history: list[dict[str, Any]] = []
         self._interaction_log_path: Path | None = None
         self._async_runner: object | None = None
+        self._loading_depth = 0
         self.registry: ToolRegistry = ToolRegistry()
         self.mcp_manager = MCPManager(settings.load_mcp_servers())
         self.shell_profile = detect_shell_profile()
@@ -116,6 +118,54 @@ class Agent:
         if llm is not None:
             llm.tool_registry = self.registry
 
+    @contextmanager
+    def _loading_status(self, message: str) -> Iterator[None]:
+        """Show a terminal loading indicator for long-running user-visible work."""
+        loading_depth = int(getattr(self, "_loading_depth", 0))
+        self._loading_depth = loading_depth + 1
+
+        try:
+            if loading_depth > 0 or not console.is_terminal:
+                yield
+            else:
+                with console.status(f"[bold cyan]{message}[/bold cyan]", spinner="dots"):
+                    yield
+        finally:
+            self._loading_depth = loading_depth
+
+    def _format_mcp_loading_message(
+        self,
+        action: str,
+        server_names: Sequence[str],
+    ) -> str:
+        """Create a concise loading message for MCP operations."""
+        if server_names:
+            server_list = ", ".join(server_names)
+            return f"{action} MCP servers: {server_list}..."
+        return f"{action} MCP servers..."
+
+    def _get_slash_command_loading_message(self, user_input: str) -> str | None:
+        """Return the loading text for slash commands that change MCP state."""
+        stripped = user_input.strip()
+        if not stripped.startswith("/"):
+            return None
+
+        command_text = stripped[1:]
+        command_name, _, arguments = command_text.partition(" ")
+        if command_name.lower() != "mcp":
+            return None
+
+        action, _, _ = arguments.strip().partition(" ")
+        match action.lower():
+            case "add" | "set":
+                return "Updating MCP configuration..."
+            case "remove" | "rm":
+                return "Removing MCP server..."
+            case "reload":
+                return "Reloading MCP tools..."
+            case _:
+                return None
+
     def _log_loaded_tools(self) -> None:
         """Emit a debug summary of the active tool set."""
         if self.debug:
@@ -153,7 +203,16 @@ class Agent:
         registered_mcp_tools: list[str] = []
         if self.mcp_manager.enabled:
             try:
-                registered_mcp_tools = self._start_mcp_manager(self.mcp_manager, self.registry)
+                with self._loading_status(
+                    self._format_mcp_loading_message(
+                        "Connecting to",
+                        self.mcp_manager.server_names,
+                    )
+                ):
+                    registered_mcp_tools = self._start_mcp_manager(
+                        self.mcp_manager,
+                        self.registry,
+                    )
             except Exception as error:
                 self._display_mcp_startup_failure(error)
                 raise
@@ -168,7 +227,13 @@ class Agent:
         next_manager = MCPManager(settings.load_mcp_servers())
 
         try:
-            registered_names = self._start_mcp_manager(next_manager, next_registry)
+            with self._loading_status(
+                self._format_mcp_loading_message(
+                    "Reloading",
+                    next_manager.server_names,
+                )
+            ):
+                registered_names = self._start_mcp_manager(next_manager, next_registry)
         except Exception:
             if next_manager.enabled:
                 self._run_async(next_manager.close())
@@ -328,13 +393,24 @@ class Agent:
         if slash_commands is None:
             return None
 
-        return cast(
-            SlashCommandResult | None,
-            slash_commands.execute(
-                user_input,
-                ctx=self._build_slash_command_context(),
-            ),
-        )
+        loading_message = self._get_slash_command_loading_message(user_input)
+        if loading_message is None:
+            return cast(
+                SlashCommandResult | None,
+                slash_commands.execute(
+                    user_input,
+                    ctx=self._build_slash_command_context(),
+                ),
+            )
+
+        with self._loading_status(loading_message):
+            return cast(
+                SlashCommandResult | None,
+                slash_commands.execute(
+                    user_input,
+                    ctx=self._build_slash_command_context(),
+                ),
+            )
 
     def _display_slash_command_result(self, content: str) -> None:
         """Render local slash command output in the terminal."""
@@ -537,7 +613,8 @@ class Agent:
             # Add context to arguments
             args["ctx"] = self.tool_context
 
-            result = self._run_async(tool.execute(**args))
+            with self._loading_status(f"Running tool {tool_name}..."):
+                result = self._run_async(tool.execute(**args))
             status = "failed" if result.startswith("Error") else "completed"
             console.print(f"[dim]Tool {tool_name} {status}[/dim]")
 

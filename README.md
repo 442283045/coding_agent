@@ -105,6 +105,7 @@ After you submit the first interactive message, the agent creates a per-session 
 Interactive responses stream by default.
 The startup banner shows `Workspace`, preserving the `-w/--workspace` value when provided.
 Tool invocations are announced in the console when they run.
+Long-running tool execution and MCP configuration or reload flows show a visible loading state in interactive mode.
 Responses are rendered as Markdown in the CLI.
 
 Interactive mode also supports local slash commands:

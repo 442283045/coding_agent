@@ -1,6 +1,7 @@
 """Tests for the core agent loop."""
 
 import asyncio
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -8,6 +9,7 @@ import pytest
 
 from coding_agent.agent.core import PROMPT_STYLE, Agent
 from coding_agent.agent.slash_commands import SlashCommandCompleter, SlashCommandResult
+from coding_agent.config import Settings
 from coding_agent.shell_environment import ShellProfile
 from coding_agent.skills import SkillCatalog
 from coding_agent.tools.registry import ToolRegistry
@@ -227,6 +229,41 @@ def test_init_tools_reports_mcp_startup_success(monkeypatch) -> None:
     assert any("Available MCP tools:" in line for line in printed)
     assert any("- mcp__playwright__browser_click" in line for line in printed)
     assert any("- mcp__playwright__browser_navigate" in line for line in printed)
+
+
+def test_init_tools_shows_loading_during_mcp_startup(monkeypatch) -> None:
+    """MCP startup should expose a visible loading status while connecting."""
+
+    loading_messages: list[str] = []
+
+    @contextmanager
+    def fake_loading(self: Agent, message: str):
+        loading_messages.append(message)
+        yield
+
+    agent = Agent.__new__(Agent)
+    agent.debug = False
+    agent.registry = ToolRegistry()
+    agent.mcp_manager = type(
+        "Manager",
+        (),
+        {"enabled": True, "server_names": ["playwright"]},
+    )()
+
+    monkeypatch.setattr(Agent, "_loading_status", fake_loading)
+    monkeypatch.setattr("coding_agent.agent.core.console.print", lambda *args, **kwargs: None)
+    monkeypatch.setattr(Agent, "_build_base_registry", lambda self: ToolRegistry())
+    monkeypatch.setattr(
+        Agent,
+        "_start_mcp_manager",
+        lambda self, manager, registry: ["mcp__playwright__browser_click"],
+    )
+    monkeypatch.setattr(Agent, "_sync_llm_tool_registry", lambda self: None)
+    monkeypatch.setattr(Agent, "_log_loaded_tools", lambda self: None)
+
+    Agent._init_tools(agent)
+
+    assert loading_messages == ["Connecting to MCP servers: playwright..."]
 
 
 def test_init_tools_reports_mcp_startup_failure(monkeypatch) -> None:
@@ -521,15 +558,22 @@ def test_execute_tool_prints_user_visible_status(monkeypatch, tmp_path: Path) ->
     """Tool execution should print visible start and completion hints for the user."""
 
     printed: list[str] = []
+    loading_messages: list[str] = []
 
     class FakeTool:
         async def execute(self, **kwargs: Any) -> str:
             return "tool output"
 
+    @contextmanager
+    def fake_loading(self: Agent, message: str):
+        loading_messages.append(message)
+        yield
+
     monkeypatch.setattr(
         "coding_agent.agent.core.console.print",
         lambda *args, **kwargs: printed.append(" ".join(str(arg) for arg in args)),
     )
+    monkeypatch.setattr(Agent, "_loading_status", fake_loading)
 
     agent = Agent.__new__(Agent)
     agent.registry = type(
@@ -552,6 +596,7 @@ def test_execute_tool_prints_user_visible_status(monkeypatch, tmp_path: Path) ->
     )
 
     assert result == "tool output"
+    assert loading_messages == ["Running tool list_directory..."]
     assert any(line.startswith("[dim]Calling tool list_directory: ") for line in printed)
     assert any(line == "[dim]Tool list_directory completed[/dim]" for line in printed)
 
@@ -716,6 +761,44 @@ def test_run_interactive_handles_slash_commands_locally(
 
     assert displayed == ["mcp result"]
     assert processed == []
+
+
+def test_dispatch_slash_command_shows_loading_for_mcp_updates(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """MCP-mutating slash commands should run inside a visible loading state."""
+
+    loading_messages: list[str] = []
+    seen_inputs: list[str] = []
+
+    class FakeSlashCommands:
+        def execute(self, user_input: str, *, ctx: object) -> SlashCommandResult | None:
+            _ = ctx
+            seen_inputs.append(user_input)
+            return SlashCommandResult(output="reloaded")
+
+    @contextmanager
+    def fake_loading(self: Agent, message: str):
+        loading_messages.append(message)
+        yield
+
+    agent = Agent.__new__(Agent)
+    agent.slash_commands = FakeSlashCommands()
+    agent.working_dir = tmp_path
+    agent.skill_catalog = SkillCatalog()
+    agent.skill_manager = type("Manager", (), {"discover": lambda self: SkillCatalog()})()
+
+    settings_obj = Settings(_env_file=None)
+    monkeypatch.setattr("coding_agent.agent.core.settings", settings_obj)
+    monkeypatch.setattr(Agent, "_loading_status", fake_loading)
+
+    result = Agent._dispatch_slash_command(agent, "/mcp reload")
+
+    assert result is not None
+    assert result.output == "reloaded"
+    assert seen_inputs == ["/mcp reload"]
+    assert loading_messages == ["Reloading MCP tools..."]
 
 
 def test_run_once_returns_local_slash_command_output(tmp_path: Path) -> None:
