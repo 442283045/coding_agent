@@ -81,6 +81,7 @@ async def test_chat_with_tools_logs_formatted_request_and_response(monkeypatch) 
     output = "\n".join(printed)
 
     assert first["content"] == "Hello from the model"
+    assert first["finish_reason"] == "stop"
     assert second["tool_calls"][0]["name"] == "read_file"
     assert output.count("Agent Run Log - ") == 1
     assert "[1] REQUEST" in output
@@ -166,6 +167,7 @@ def test_handle_response_preserves_reasoning_content() -> None:
     )
 
     assert result["content"] == "done"
+    assert result["finish_reason"] == "stop"
     assert result["reasoning_content"] == "thought process"
 
 
@@ -301,6 +303,7 @@ async def test_chat_with_tools_streams_by_default_and_collects_tool_calls(monkey
     assert captured_request["stream"] is True
     assert chunks_seen == ["Hel", "lo"]
     assert result["content"] == "Hello"
+    assert result["finish_reason"] == "tool_calls"
     assert result["reasoning_content"] == "Think more"
     assert result["tool_calls"] == [
         {

@@ -233,6 +233,42 @@ class Agent:
             return summary[: max_length - 3] + "..."
         return summary
 
+    def _parse_tool_arguments(self, raw_arguments: str) -> dict[str, Any]:
+        """Decode tool arguments and ensure the payload is a JSON object."""
+        arguments = json.loads(raw_arguments)
+        if not isinstance(arguments, dict):
+            raise ValueError("Tool arguments must decode to a JSON object.")
+        return arguments
+
+    def _format_invalid_tool_arguments_error(
+        self,
+        error: Exception,
+        *,
+        finish_reason: str | None,
+    ) -> str:
+        """Create an actionable error for malformed or truncated tool arguments."""
+        if isinstance(error, json.JSONDecodeError) and finish_reason == "length":
+            return (
+                "Error: Tool arguments were truncated because the model hit the response "
+                "length limit. Retry with smaller arguments. For large file writes, use "
+                "write_file for the first chunk and append_file for the remaining chunks."
+            )
+        return f"Error: Invalid tool arguments - {error}"
+
+    def _build_anthropic_tool_input(
+        self,
+        raw_arguments: str,
+        *,
+        finish_reason: str | None,
+    ) -> dict[str, Any]:
+        """Build a tool_use input payload without crashing on malformed JSON."""
+        try:
+            return self._parse_tool_arguments(raw_arguments)
+        except json.JSONDecodeError, ValueError:
+            # Keep the message structurally valid so the follow-up tool_result can
+            # explain what went wrong and guide the model toward a retry.
+            return {"_invalid_tool_arguments": True}
+
     def _ensure_interaction_log_file(self) -> Path:
         """Create the per-session LLM interaction log file on first user submission."""
         if self._interaction_log_path is not None:
@@ -384,6 +420,9 @@ class Agent:
             content = str(response.get("content", ""))
             tool_calls = response.get("tool_calls", [])
             reasoning_content = response.get("reasoning_content")
+            finish_reason = response.get("finish_reason")
+            if not isinstance(finish_reason, str):
+                finish_reason = None
 
             if self.debug:
                 console.print(f"[dim]Iteration {iteration + 1}: {len(tool_calls)} tool calls[/dim]")
@@ -410,7 +449,10 @@ class Agent:
                                 "type": "tool_use",
                                 "id": tc["id"],
                                 "name": tc["name"],
-                                "input": json.loads(tc["arguments"]),
+                                "input": self._build_anthropic_tool_input(
+                                    tc["arguments"],
+                                    finish_reason=finish_reason,
+                                ),
                             }
                         )
                 else:
@@ -431,7 +473,7 @@ class Agent:
 
                 # Execute tools
                 for tool_call in tool_calls:
-                    result = self._execute_tool(tool_call)
+                    result = self._execute_tool(tool_call, finish_reason=finish_reason)
 
                     # Add tool response
                     if "claude" in self.model.lower():
@@ -474,7 +516,12 @@ class Agent:
         else:
             console.print("[yellow]Warning: Reached maximum iterations.[/yellow]")
 
-    def _execute_tool(self, tool_call: dict[str, Any]) -> str:
+    def _execute_tool(
+        self,
+        tool_call: dict[str, Any],
+        *,
+        finish_reason: str | None = None,
+    ) -> str:
         """Execute a tool call."""
         tool_name = tool_call["name"]
         tool = self.registry.get(tool_name)
@@ -483,7 +530,7 @@ class Agent:
             return f"Error: Tool '{tool_name}' not found."
 
         try:
-            args = json.loads(tool_call["arguments"])
+            args = self._parse_tool_arguments(tool_call["arguments"])
             console.print(
                 f"[dim]Calling tool {tool_name}: {self._summarize_tool_arguments(args)}[/dim]"
             )
@@ -501,8 +548,11 @@ class Agent:
 
             return result
 
-        except json.JSONDecodeError as e:
-            return f"Error: Invalid tool arguments - {e}"
+        except (json.JSONDecodeError, ValueError) as e:
+            return self._format_invalid_tool_arguments_error(
+                e,
+                finish_reason=finish_reason,
+            )
         except Exception as e:
             if self.debug:
                 raise
@@ -538,6 +588,9 @@ class Agent:
             content = str(response.get("content", ""))
             tool_calls = response.get("tool_calls", [])
             reasoning_content = response.get("reasoning_content")
+            finish_reason = response.get("finish_reason")
+            if not isinstance(finish_reason, str):
+                finish_reason = None
 
             max_iterations = settings.max_iterations
             iteration = 0
@@ -565,7 +618,7 @@ class Agent:
                 self.history.append(assistant_message)
 
                 for tool_call in tool_calls:
-                    result = self._execute_tool(tool_call)
+                    result = self._execute_tool(tool_call, finish_reason=finish_reason)
                     self.history.append(
                         {
                             "role": "tool",
@@ -578,6 +631,9 @@ class Agent:
                 content = str(response.get("content", ""))
                 tool_calls = response.get("tool_calls", [])
                 reasoning_content = response.get("reasoning_content")
+                finish_reason = response.get("finish_reason")
+                if not isinstance(finish_reason, str):
+                    finish_reason = None
 
             final_message: dict[str, Any] = {"role": "assistant", "content": content}
             if isinstance(reasoning_content, str) and reasoning_content:

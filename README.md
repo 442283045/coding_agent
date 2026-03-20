@@ -8,7 +8,7 @@ AI-powered CLI coding assistant built with Python and uv.
 - 🛠️ Extensible tool system with built-in tools plus FastMCP-backed MCP servers
 - 🧠 Workspace skills discovery for project-local `SKILL.md` workflows
 - 🔍 Code search and analysis with Tree-sitter
-- 📝 File read/write with safety checks
+- 📝 File read/write with safety checks and chunked appends for large generated files
 - 🔒 Native shell command execution with OS-aware prompt guidance
 - 💾 Conversation history management
 
@@ -128,6 +128,8 @@ which MCP tools are available.
 the agent can inspect a matching `SKILL.md` on demand.
 `execute_shell` now runs arbitrary commands in the detected native shell for the current
 platform: PowerShell on Windows, bash on macOS/Linux.
+When generating large files, the agent can now split writes across `write_file` followed
+by `append_file` to avoid oversized tool-call payloads.
 
 ### Single command mode
 

@@ -295,7 +295,14 @@ def test_agent_reuses_shared_event_loop_for_mcp_lifecycle(tmp_path: Path) -> Non
     agent._async_runner = None
 
     Agent._start_mcp_manager(agent, agent.mcp_manager, agent.registry)
-    agent.registry = type("Registry", (), {"get": lambda self, name: FakeTool()})()
+    agent.registry = type(
+        "Registry",
+        (),
+        {
+            "get": lambda self, name: FakeTool(),
+            "list_tools": lambda self: [],
+        },
+    )()
     Agent._execute_tool(
         agent,
         {
@@ -487,7 +494,11 @@ def test_process_message_preserves_reasoning_content_for_tool_calls(
         lambda *args, **kwargs: None,
     )
     monkeypatch.setattr("coding_agent.config.Settings.config_dir", property(lambda self: tmp_path))
-    monkeypatch.setattr(Agent, "_execute_tool", lambda self, tool_call: "tool output")
+    monkeypatch.setattr(
+        Agent,
+        "_execute_tool",
+        lambda self, tool_call, finish_reason=None: "tool output",
+    )
     monkeypatch.setattr(Agent, "_display_response", lambda self, content: None)
 
     agent = Agent.__new__(Agent)
@@ -521,7 +532,14 @@ def test_execute_tool_prints_user_visible_status(monkeypatch, tmp_path: Path) ->
     )
 
     agent = Agent.__new__(Agent)
-    agent.registry = type("Registry", (), {"get": lambda self, name: FakeTool()})()
+    agent.registry = type(
+        "Registry",
+        (),
+        {
+            "get": lambda self, name: FakeTool(),
+            "list_tools": lambda self: [],
+        },
+    )()
     agent.tool_context = {"working_dir": str(tmp_path), "debug": False}
     agent.debug = False
 
@@ -536,6 +554,125 @@ def test_execute_tool_prints_user_visible_status(monkeypatch, tmp_path: Path) ->
     assert result == "tool output"
     assert any(line.startswith("[dim]Calling tool list_directory: ") for line in printed)
     assert any(line == "[dim]Tool list_directory completed[/dim]" for line in printed)
+
+
+def test_execute_tool_returns_retry_guidance_for_truncated_arguments(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """Truncated tool-call JSON should return a recovery hint instead of a raw parse failure."""
+
+    class FakeTool:
+        async def execute(self, **kwargs: Any) -> str:
+            return "tool output"
+
+    monkeypatch.setattr(
+        "coding_agent.agent.core.console.print",
+        lambda *args, **kwargs: None,
+    )
+
+    agent = Agent.__new__(Agent)
+    agent.registry = type(
+        "Registry",
+        (),
+        {
+            "get": lambda self, name: FakeTool(),
+            "list_tools": lambda self: [],
+        },
+    )()
+    agent.tool_context = {"working_dir": str(tmp_path), "debug": False}
+    agent.debug = False
+
+    result = Agent._execute_tool(
+        agent,
+        {
+            "name": "write_file",
+            "arguments": '{"path": "demo.py", "content": "unterminated',
+        },
+        finish_reason="length",
+    )
+
+    assert "Tool arguments were truncated" in result
+    assert "write_file" in result
+    assert "append_file" in result
+
+
+def test_process_message_handles_claude_truncated_tool_arguments(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """Anthropic-format tool_use messages should stay valid even when args are truncated."""
+
+    class FakeLLMClient:
+        def __init__(self) -> None:
+            self.responses = [
+                {
+                    "content": "",
+                    "finish_reason": "length",
+                    "tool_calls": [
+                        {
+                            "id": "tool-1",
+                            "name": "write_file",
+                            "arguments": '{"path": "demo.py", "content": "unterminated',
+                        }
+                    ],
+                },
+                {
+                    "content": "retry with chunks",
+                    "tool_calls": [],
+                },
+            ]
+
+        def set_log_path(self, log_path: Path) -> None:
+            return None
+
+        async def chat_with_tools(
+            self, messages: list[dict[str, Any]], **kwargs: Any
+        ) -> dict[str, Any]:
+            return self.responses.pop(0)
+
+    class FakeTool:
+        async def execute(self, **kwargs: Any) -> str:
+            return "tool output"
+
+    monkeypatch.setattr(
+        "coding_agent.agent.core.console.print",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr("coding_agent.config.Settings.config_dir", property(lambda self: tmp_path))
+    monkeypatch.setattr(Agent, "_display_response", lambda self, content: None)
+
+    agent = Agent.__new__(Agent)
+    agent.working_dir = tmp_path
+    agent.model = "claude-3-7-sonnet"
+    agent.debug = False
+    agent.llm = FakeLLMClient()
+    agent.history = []
+    agent.registry = type(
+        "Registry",
+        (),
+        {
+            "get": lambda self, name: FakeTool(),
+            "list_tools": lambda self: [],
+        },
+    )()
+    agent.tool_context = {"working_dir": str(tmp_path), "debug": False}
+    agent._interaction_log_path = None
+
+    Agent._process_message(agent, "create a file")
+
+    assistant_message = next(message for message in agent.history if message["role"] == "assistant")
+    tool_use_block = assistant_message["content"][1]
+
+    assert tool_use_block["type"] == "tool_use"
+    assert tool_use_block["input"] == {"_invalid_tool_arguments": True}
+
+    tool_result = next(
+        message
+        for message in agent.history
+        if message["role"] == "user" and isinstance(message["content"], list)
+    )
+    assert "Tool arguments were truncated" in tool_result["content"][0]["content"]
 
 
 def test_run_interactive_handles_slash_commands_locally(

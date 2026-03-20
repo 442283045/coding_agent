@@ -286,6 +286,9 @@ class LLMClient:
             "content": message.content or "",
             "tool_calls": [],
         }
+        finish_reason = getattr(choice, "finish_reason", None)
+        if isinstance(finish_reason, str) and finish_reason:
+            result["finish_reason"] = finish_reason
         reasoning_content = getattr(message, "reasoning_content", None)
         if isinstance(reasoning_content, str) and reasoning_content:
             result["reasoning_content"] = reasoning_content
@@ -385,6 +388,8 @@ class LLMClient:
                 if tool_calls_by_index[index]["name"]
             ],
         }
+        if isinstance(finish_reason, str) and finish_reason:
+            result["finish_reason"] = finish_reason
         if reasoning_chunks:
             result["reasoning_content"] = "".join(reasoning_chunks)
         self._logger.log_response(

@@ -99,8 +99,9 @@ async def read_file(
 
 @registry.tool(
     name="write_file",
-    description="Write content to a file. Creates the file if it doesn't exist. "
-    "Overwrites existing content. Use with caution.",
+    description="Write content to a file. Creates the file if it doesn't exist and "
+    "overwrites any existing content. For large files, write the first chunk with "
+    "this tool and append the remaining chunks with append_file.",
 )
 async def write_file(
     path: str,
@@ -122,6 +123,33 @@ async def write_file(
         return f"Successfully wrote {len(content)} characters to '{path}'."
     except Exception as e:
         return f"Error writing file: {e}"
+
+
+@registry.tool(
+    name="append_file",
+    description="Append content to the end of a file. Creates the file if it doesn't "
+    "exist. Use this after write_file when a large file needs to be written in "
+    "multiple chunks.",
+)
+async def append_file(
+    path: str,
+    content: str,
+    ctx: dict[str, Any] | None = None,
+) -> str:
+    """Append content to a file."""
+    working_dir = _get_working_dir(ctx)
+    file_path = (working_dir / path).resolve()
+
+    if not _is_path_safe(file_path, working_dir):
+        return f"Error: Access denied. Path '{path}' is outside working directory."
+
+    try:
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        with file_path.open("a", encoding="utf-8") as handle:
+            handle.write(content)
+        return f"Successfully appended {len(content)} characters to '{path}'."
+    except Exception as e:
+        return f"Error appending file: {e}"
 
 
 @registry.tool(

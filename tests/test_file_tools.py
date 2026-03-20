@@ -4,7 +4,7 @@ import tempfile
 
 import pytest
 
-from coding_agent.tools.file_tools import list_directory, read_file, write_file
+from coding_agent.tools.file_tools import append_file, list_directory, read_file, write_file
 
 
 @pytest.fixture
@@ -74,3 +74,17 @@ async def test_path_safety(temp_dir):
     # Try to access outside working directory
     result = await read_file(path="../outside.txt", ctx=ctx)
     assert "Access denied" in result
+
+
+@pytest.mark.asyncio
+async def test_append_file(temp_dir):
+    """Appending should preserve existing content and create the file if needed."""
+    ctx = {"working_dir": temp_dir}
+
+    await write_file(path="story.txt", content="Hello", ctx=ctx)
+    result = await append_file(path="story.txt", content=", world!", ctx=ctx)
+
+    assert "Successfully appended" in result
+
+    content = await read_file(path="story.txt", ctx=ctx)
+    assert "Hello, world!" in content

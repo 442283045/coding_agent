@@ -61,6 +61,7 @@ Parameters:
 2. **Step by Step**: For complex tasks, break them down and use tools methodically.
 3. **Verify Changes**: After making changes, verify they work as expected.
 4. **Context Awareness**: Use the working directory context when referencing files.
+5. **Large Files**: When creating long files or large generated outputs, write them in smaller chunks. Use `write_file` for the first chunk and `append_file` for the remaining chunks.
 
 ## Code Style
 
