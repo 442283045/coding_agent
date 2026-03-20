@@ -9,7 +9,7 @@ AI-powered CLI coding assistant built with Python and uv.
 - 🧠 Workspace skills discovery for project-local `SKILL.md` workflows
 - 🔍 Code search and analysis with Tree-sitter
 - 📝 File read/write with safety checks
-- 🔒 Secure shell command execution
+- 🔒 Native shell command execution with OS-aware prompt guidance
 - 💾 Conversation history management
 
 ## Installation
@@ -126,6 +126,8 @@ which MCP tools are available.
 `/skills` shows workspace-local installed skills discovered under `.coding-agent/skills`,
 `.codex/skills`, and `.agents/skills`. The system prompt also advertises those skills so
 the agent can inspect a matching `SKILL.md` on demand.
+`execute_shell` now runs arbitrary commands in the detected native shell for the current
+platform: PowerShell on Windows, bash on macOS/Linux.
 
 ### Single command mode
 

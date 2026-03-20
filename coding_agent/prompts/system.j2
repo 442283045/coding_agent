@@ -5,6 +5,19 @@ You are working in: `{{ working_dir }}`
 
 All file paths should be relative to this directory.
 
+## Shell Environment
+
+Shell commands must match the user's actual system shell because they are executed directly.
+
+- Operating system: `{{ shell_profile.operating_system }}`
+- Shell: `{{ shell_profile.shell_name }}`
+- Executable: `{{ shell_profile.executable }}`
+- Command format: {{ shell_profile.command_style }}
+- Environment variables: {{ shell_profile.environment_syntax }}
+
+Never generate bash syntax for Windows PowerShell sessions, and never generate PowerShell syntax
+for macOS/Linux bash sessions.
+
 ## Available Skills
 
 {% if skills %}

@@ -8,6 +8,7 @@ import pytest
 
 from coding_agent.agent.core import PROMPT_STYLE, Agent
 from coding_agent.agent.slash_commands import SlashCommandCompleter, SlashCommandResult
+from coding_agent.shell_environment import ShellProfile
 from coding_agent.skills import SkillCatalog
 from coding_agent.tools.registry import ToolRegistry
 
@@ -143,6 +144,50 @@ def test_agent_load_system_prompt_includes_workspace_skills(
     assert "## Available Skills" in prompt
     assert "Reviewer" in prompt
     assert ".codex" in prompt
+
+
+def test_agent_load_system_prompt_includes_shell_environment(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """The rendered system prompt should describe the active shell environment."""
+
+    class FakeLLMClient:
+        def __init__(
+            self,
+            model: str | None = None,
+            debug: bool | None = None,
+            tool_registry: ToolRegistry | None = None,
+        ) -> None:
+            return None
+
+    class FakePromptSession:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            return None
+
+    monkeypatch.setattr("coding_agent.agent.core.LLMClient", FakeLLMClient)
+    monkeypatch.setattr("coding_agent.agent.core.PromptSession", FakePromptSession)
+    monkeypatch.setattr("coding_agent.agent.core.FileHistory", lambda *args, **kwargs: object())
+    monkeypatch.setattr("coding_agent.agent.core.AutoSuggestFromHistory", lambda: object())
+    monkeypatch.setattr(Agent, "_init_tools", lambda self: None)
+    monkeypatch.setattr(
+        "coding_agent.agent.core.detect_shell_profile",
+        lambda: ShellProfile(
+            operating_system="Windows",
+            shell_name="PowerShell",
+            executable="powershell",
+            arguments=("-NoLogo", "-NoProfile", "-Command"),
+            command_style="Use PowerShell syntax.",
+            environment_syntax="Use $env:NAME='value'.",
+        ),
+    )
+
+    agent = Agent(working_dir=str(tmp_path), model="gpt-4o-mini", debug=False)
+    prompt = agent._load_system_prompt()
+
+    assert "## Shell Environment" in prompt
+    assert "PowerShell" in prompt
+    assert "Use PowerShell syntax." in prompt
 
 
 def test_init_tools_reports_mcp_startup_success(monkeypatch) -> None:

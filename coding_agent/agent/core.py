@@ -23,6 +23,7 @@ from coding_agent.agent.slash_commands import (
 from coding_agent.config import settings
 from coding_agent.llm.client import LLMClient
 from coding_agent.mcp import MCPManager
+from coding_agent.shell_environment import ShellProfile, detect_shell_profile
 from coding_agent.skills import SkillCatalog, SkillManager
 from coding_agent.tools.registry import ToolRegistry, registry
 
@@ -48,6 +49,7 @@ class Agent:
         self._async_runner: object | None = None
         self.registry: ToolRegistry = ToolRegistry()
         self.mcp_manager = MCPManager(settings.load_mcp_servers())
+        self.shell_profile = detect_shell_profile()
         self.skill_manager = SkillManager(working_dir=self.working_dir)
         self.skill_catalog: SkillCatalog = self.skill_manager.discover()
         self.slash_commands = create_default_slash_command_registry()
@@ -194,6 +196,7 @@ class Agent:
             return template.render(
                 working_dir=str(self.working_dir),
                 tools=self.registry.list_tools(),
+                shell_profile=self.get_shell_profile(),
                 skill_search_roots=skill_catalog.root_display_paths(self.working_dir),
                 skills=skill_entries,
             )
@@ -265,6 +268,13 @@ class Agent:
         if isinstance(skill_catalog, SkillCatalog):
             return skill_catalog
         return SkillCatalog()
+
+    def get_shell_profile(self) -> ShellProfile:
+        """Return the shell profile used for command generation and execution."""
+        shell_profile = getattr(self, "shell_profile", None)
+        if isinstance(shell_profile, ShellProfile):
+            return shell_profile
+        return detect_shell_profile()
 
     def reload_skills(self) -> SkillCatalog:
         """Rescan workspace-local skills and update the prompt context."""

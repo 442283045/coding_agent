@@ -3,11 +3,11 @@
 import json
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Any
 
 from platformdirs import user_config_dir
 from pydantic import BaseModel, Field, field_validator, model_validator
-from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 def normalize_model_name(model: str) -> str:
@@ -47,23 +47,12 @@ class Settings(BaseSettings):
     max_iterations: int = Field(default=50, ge=1, le=1000)
 
     # Safety settings
-    allowed_shell_commands: Annotated[list[str], NoDecode] = Field(
-        default_factory=lambda: ["git", "python", "pytest", "ls", "cat", "echo", "find", "grep"]
-    )
     max_file_size: int = Field(default=1024 * 1024, ge=1024)  # 1MB default
 
     # Debug
     debug: bool = Field(default=False)
     mcp_servers_json: str | None = Field(default=None, alias="MCP_SERVERS_JSON")
     mcp_config_path: Path | None = Field(default=None, alias="MCP_CONFIG_PATH")
-
-    @field_validator("allowed_shell_commands", mode="before")
-    @classmethod
-    def parse_shell_commands(cls, v: str | list[str]) -> list[str]:
-        """Parse comma-separated shell commands."""
-        if isinstance(v, str):
-            return [cmd.strip() for cmd in v.split(",") if cmd.strip()]
-        return v
 
     @field_validator("default_model")
     @classmethod
