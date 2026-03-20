@@ -118,6 +118,8 @@ Interactive mode also supports local slash commands:
 Typing `/` in interactive mode will show slash command candidates automatically.
 `/mcp` shows the effective MCP configuration, persists file-based changes to the active
 `mcp.json`, and reloads MCP tools into the current session immediately.
+When MCP servers are configured, startup also prints whether initialization succeeded and
+which MCP tools are available.
 
 ### Single command mode
 

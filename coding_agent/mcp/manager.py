@@ -45,6 +45,11 @@ class MCPManager:
         """Whether any MCP servers are configured."""
         return bool(self._server_configs)
 
+    @property
+    def server_names(self) -> list[str]:
+        """Return configured MCP server names in a stable order."""
+        return sorted(self._server_configs)
+
     async def start(self, registry: ToolRegistry) -> list[str]:
         """Connect to configured servers and register their tools."""
         if not self._server_configs:

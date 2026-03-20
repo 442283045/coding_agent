@@ -1,7 +1,10 @@
 """Tests for the core agent loop."""
 
+import asyncio
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 from coding_agent.agent.core import PROMPT_STYLE, Agent
 from coding_agent.agent.slash_commands import SlashCommandCompleter, SlashCommandResult
@@ -98,6 +101,125 @@ def test_agent_configures_prompt_session_with_slash_completer(
     prompt_kwargs = captured["kwargs"]
     assert isinstance(prompt_kwargs["completer"], SlashCommandCompleter)
     assert prompt_kwargs["complete_while_typing"] is True
+
+
+def test_init_tools_reports_mcp_startup_success(monkeypatch) -> None:
+    """Startup should tell the user when MCP servers load successfully."""
+
+    printed: list[str] = []
+
+    agent = Agent.__new__(Agent)
+    agent.debug = False
+    agent.registry = ToolRegistry()
+    agent.mcp_manager = type(
+        "Manager",
+        (),
+        {"enabled": True, "server_names": ["playwright"]},
+    )()
+
+    monkeypatch.setattr(
+        "coding_agent.agent.core.console.print",
+        lambda *args, **kwargs: printed.append(" ".join(str(arg) for arg in args)),
+    )
+    monkeypatch.setattr(Agent, "_build_base_registry", lambda self: ToolRegistry())
+    monkeypatch.setattr(
+        Agent,
+        "_start_mcp_manager",
+        lambda self, manager, registry: [
+            "mcp__playwright__browser_click",
+            "mcp__playwright__browser_navigate",
+        ],
+    )
+    monkeypatch.setattr(Agent, "_sync_llm_tool_registry", lambda self: None)
+    monkeypatch.setattr(Agent, "_log_loaded_tools", lambda self: None)
+
+    Agent._init_tools(agent)
+
+    assert any("MCP configured successfully." in line for line in printed)
+    assert any("Loaded servers: `playwright`" in line for line in printed)
+    assert any("Available MCP tools:" in line for line in printed)
+    assert any("- mcp__playwright__browser_click" in line for line in printed)
+    assert any("- mcp__playwright__browser_navigate" in line for line in printed)
+
+
+def test_init_tools_reports_mcp_startup_failure(monkeypatch) -> None:
+    """Startup should show a user-visible MCP failure summary before raising."""
+
+    printed: list[str] = []
+
+    agent = Agent.__new__(Agent)
+    agent.debug = False
+    agent.registry = ToolRegistry()
+    agent.mcp_manager = type(
+        "Manager",
+        (),
+        {"enabled": True, "server_names": ["playwright"]},
+    )()
+
+    monkeypatch.setattr(
+        "coding_agent.agent.core.console.print",
+        lambda *args, **kwargs: printed.append(" ".join(str(arg) for arg in args)),
+    )
+    monkeypatch.setattr(Agent, "_build_base_registry", lambda self: ToolRegistry())
+
+    def fail_start(self, manager: object, registry: ToolRegistry) -> list[str]:
+        raise RuntimeError("playwright server exited unexpectedly")
+
+    monkeypatch.setattr(Agent, "_start_mcp_manager", fail_start)
+    monkeypatch.setattr(Agent, "_sync_llm_tool_registry", lambda self: None)
+    monkeypatch.setattr(Agent, "_log_loaded_tools", lambda self: None)
+
+    with pytest.raises(RuntimeError, match="playwright server exited unexpectedly"):
+        Agent._init_tools(agent)
+
+    assert any("MCP configuration failed." in line for line in printed)
+    assert any("Configured servers: `playwright`" in line for line in printed)
+    assert any("playwright server exited unexpectedly" in line for line in printed)
+
+
+def test_agent_reuses_shared_event_loop_for_mcp_lifecycle(tmp_path: Path) -> None:
+    """MCP startup and tool execution should run on the same asyncio runner."""
+
+    loop_ids: list[int] = []
+
+    class FakeManager:
+        enabled = True
+        server_names = ["playwright"]
+
+        async def start(self, registry: ToolRegistry) -> list[str]:
+            _ = registry
+            loop_ids.append(id(asyncio.get_running_loop()))
+            return ["mcp__playwright__browser_navigate"]
+
+        async def close(self) -> None:
+            return None
+
+    class FakeTool:
+        async def execute(self, **kwargs: Any) -> str:
+            _ = kwargs
+            loop_ids.append(id(asyncio.get_running_loop()))
+            return "ok"
+
+    agent = Agent.__new__(Agent)
+    agent.debug = False
+    agent.registry = ToolRegistry()
+    agent.mcp_manager = FakeManager()
+    agent.tool_context = {"working_dir": str(tmp_path), "debug": False}
+    agent._async_runner = None
+
+    Agent._start_mcp_manager(agent, agent.mcp_manager, agent.registry)
+    agent.registry = type("Registry", (), {"get": lambda self, name: FakeTool()})()
+    Agent._execute_tool(
+        agent,
+        {
+            "name": "mcp__playwright__browser_navigate",
+            "arguments": '{"url": "https://juejin.cn"}',
+        },
+    )
+    Agent.close(agent)
+
+    assert len(loop_ids) == 2
+    assert loop_ids[0] == loop_ids[1]
 
 
 def test_interactive_session_creates_one_log_file_on_first_submission(

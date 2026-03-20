@@ -1,9 +1,10 @@
 """Core agent implementation with ReAct loop."""
 
 import json
+from collections.abc import Awaitable, Sequence
 from datetime import datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, TypeVar, cast
 
 from jinja2 import Template
 from prompt_toolkit import PromptSession
@@ -26,6 +27,7 @@ from coding_agent.tools.registry import ToolRegistry, registry
 
 console = Console()
 PROMPT_STYLE = Style.from_dict({"prompt": "bold green"})
+T = TypeVar("T")
 
 
 class Agent:
@@ -42,6 +44,7 @@ class Agent:
         self.debug = debug
         self.history: list[dict[str, Any]] = []
         self._interaction_log_path: Path | None = None
+        self._async_runner: object | None = None
         self.registry: ToolRegistry = ToolRegistry()
         self.mcp_manager = MCPManager(settings.load_mcp_servers())
         self.slash_commands = create_default_slash_command_registry()
@@ -83,9 +86,24 @@ class Agent:
         if not mcp_manager.enabled:
             return []
 
+        return self._run_async(mcp_manager.start(tool_registry))
+
+    def _get_async_runner(self) -> Any:
+        """Get or create the shared asyncio runner for this agent."""
+        runner = getattr(self, "_async_runner", None)
+        if runner is not None:
+            return runner
+
         import asyncio
 
-        return asyncio.run(mcp_manager.start(tool_registry))
+        runner = asyncio.Runner()
+        self._async_runner = runner
+        return runner
+
+    def _run_async(self, awaitable: Awaitable[T]) -> T:
+        """Run an awaitable on the agent's shared event loop."""
+        runner = self._get_async_runner()
+        return cast(T, runner.run(awaitable))
 
     def _sync_llm_tool_registry(self) -> None:
         """Keep the LLM client pointed at the active tool registry."""
@@ -99,10 +117,47 @@ class Agent:
             tools = self.registry.list_tools()
             console.print(f"[dim]Loaded {len(tools)} tools[/dim]")
 
+    def _display_mcp_startup_success(self, tool_names: Sequence[str]) -> None:
+        """Show a user-visible MCP startup summary."""
+        if not self.mcp_manager.enabled:
+            return
+
+        server_names = ", ".join(f"`{name}`" for name in self.mcp_manager.server_names)
+        console.print(
+            f"[green]MCP configured successfully.[/green] Loaded servers: {server_names}"
+        )
+
+        if not tool_names:
+            console.print("[yellow]MCP is connected, but no tools were exposed.[/yellow]")
+            return
+
+        console.print("[green]Available MCP tools:[/green]")
+        for tool_name in sorted(tool_names):
+            console.print(f"[dim]- {tool_name}[/dim]")
+
+    def _display_mcp_startup_failure(self, error: Exception) -> None:
+        """Show a user-visible MCP startup failure summary."""
+        if not self.mcp_manager.enabled:
+            return
+
+        server_names = ", ".join(f"`{name}`" for name in self.mcp_manager.server_names)
+        console.print(
+            f"[red]MCP configuration failed.[/red] Configured servers: {server_names}"
+        )
+        console.print(f"[red]Reason:[/red] {error}")
+
     def _init_tools(self) -> None:
         """Initialize and register all tools."""
         self.registry = self._build_base_registry()
-        self._start_mcp_manager(self.mcp_manager, self.registry)
+        registered_mcp_tools: list[str] = []
+        if self.mcp_manager.enabled:
+            try:
+                registered_mcp_tools = self._start_mcp_manager(self.mcp_manager, self.registry)
+            except Exception as error:
+                self._display_mcp_startup_failure(error)
+                raise
+            else:
+                self._display_mcp_startup_success(registered_mcp_tools)
         self._sync_llm_tool_registry()
         self._log_loaded_tools()
 
@@ -115,9 +170,7 @@ class Agent:
             registered_names = self._start_mcp_manager(next_manager, next_registry)
         except Exception:
             if next_manager.enabled:
-                import asyncio
-
-                asyncio.run(next_manager.close())
+                self._run_async(next_manager.close())
             raise
 
         previous_manager = self.mcp_manager
@@ -126,9 +179,7 @@ class Agent:
         self._sync_llm_tool_registry()
 
         if previous_manager.enabled:
-            import asyncio
-
-            asyncio.run(previous_manager.close())
+            self._run_async(previous_manager.close())
 
         self._log_loaded_tools()
         return registered_names
@@ -285,10 +336,8 @@ class Agent:
                 if isinstance(current_live, Live):
                     current_live.update(renderable, refresh=True)
 
-            import asyncio
-
             try:
-                response = asyncio.run(
+                response = self._run_async(
                     self.llm.chat_with_tools(
                         self._build_messages(),
                         on_content_chunk=on_content_chunk,
@@ -409,9 +458,7 @@ class Agent:
             # Add context to arguments
             args["ctx"] = self.tool_context
 
-            import asyncio
-
-            result = asyncio.run(tool.execute(**args))
+            result = self._run_async(tool.execute(**args))
             status = "failed" if result.startswith("Error") else "completed"
             console.print(f"[dim]Tool {tool_name} {status}[/dim]")
 
@@ -436,12 +483,14 @@ class Agent:
 
     def close(self) -> None:
         """Close session-scoped resources like MCP clients."""
-        if not self.mcp_manager.enabled:
-            return
-
-        import asyncio
-
-        asyncio.run(self.mcp_manager.close())
+        try:
+            if self.mcp_manager.enabled:
+                self._run_async(self.mcp_manager.close())
+        finally:
+            runner = getattr(self, "_async_runner", None)
+            if runner is not None:
+                runner.close()
+                self._async_runner = None
 
     def run_once(self, prompt: str) -> str:
         """Execute a single prompt and return the result."""
@@ -452,9 +501,7 @@ class Agent:
 
             self.history.append({"role": "user", "content": prompt})
 
-            import asyncio
-
-            response = asyncio.run(self.llm.chat_with_tools(self._build_messages()))
+            response = self._run_async(self.llm.chat_with_tools(self._build_messages()))
 
             content = str(response.get("content", ""))
             tool_calls = response.get("tool_calls", [])
@@ -495,7 +542,7 @@ class Agent:
                         }
                     )
 
-                response = asyncio.run(self.llm.chat_with_tools(self._build_messages()))
+                response = self._run_async(self.llm.chat_with_tools(self._build_messages()))
                 content = str(response.get("content", ""))
                 tool_calls = response.get("tool_calls", [])
                 reasoning_content = response.get("reasoning_content")
