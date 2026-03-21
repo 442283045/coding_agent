@@ -708,6 +708,59 @@ def test_execute_tool_prints_user_visible_status(monkeypatch, tmp_path: Path) ->
     assert any(line == "[dim]Tool list_directory completed[/dim]" for line in printed)
 
 
+def test_execute_tool_displays_file_change_preview(monkeypatch, tmp_path: Path) -> None:
+    """Successful file edits should surface a diff preview in the CLI."""
+
+    previews = []
+
+    class FakeTool:
+        async def execute(self, **kwargs: Any) -> str:
+            file_path = Path(kwargs["ctx"]["working_dir"]) / kwargs["path"]
+            file_path.write_text(kwargs["content"], encoding="utf-8")
+            return f"Successfully wrote {len(kwargs['content'])} characters to '{kwargs['path']}'."
+
+    @contextmanager
+    def fake_loading(self: Agent, message: str):
+        yield
+
+    monkeypatch.setattr(
+        "coding_agent.agent.core.console.print",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(Agent, "_loading_status", fake_loading)
+    monkeypatch.setattr(
+        Agent,
+        "_display_file_change_preview",
+        lambda self, preview: previews.append(preview),
+    )
+
+    agent = Agent.__new__(Agent)
+    agent.registry = type(
+        "Registry",
+        (),
+        {
+            "get": lambda self, name: FakeTool(),
+            "list_tools": lambda self: [],
+        },
+    )()
+    agent.tool_context = {"working_dir": str(tmp_path), "debug": False}
+    agent.debug = False
+
+    result = Agent._execute_tool(
+        agent,
+        {
+            "name": "write_file",
+            "arguments": '{"path": "demo.py", "content": "print(\\"hi\\")\\n"}',
+        },
+    )
+
+    assert result == "Successfully wrote 12 characters to 'demo.py'."
+    assert len(previews) == 1
+    assert previews[0].operation == "created"
+    assert previews[0].path == "demo.py"
+    assert previews[0].added_lines == 1
+
+
 def test_execute_tool_returns_retry_guidance_for_truncated_arguments(
     monkeypatch,
     tmp_path: Path,

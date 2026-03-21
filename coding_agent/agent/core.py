@@ -15,7 +15,9 @@ from prompt_toolkit.styles import Style
 from rich.console import Console, Group, RenderableType
 from rich.live import Live
 from rich.markdown import Markdown
+from rich.panel import Panel
 from rich.status import Status
+from rich.syntax import Syntax
 from rich.text import Text
 
 from coding_agent.agent.slash_commands import (
@@ -29,6 +31,11 @@ from coding_agent.mcp import MCPManager
 from coding_agent.shell_environment import ShellProfile, detect_shell_profile
 from coding_agent.skills import SkillCatalog, SkillManager
 from coding_agent.tools.registry import ToolRegistry, registry
+from coding_agent.utils.file_diff import (
+    FileChangePreview,
+    build_file_change_preview,
+    capture_file_snapshot,
+)
 
 console = Console()
 PROMPT_STYLE = Style.from_dict({"prompt": "bold green"})
@@ -674,6 +681,10 @@ class Agent:
 
         try:
             args = self._parse_tool_arguments(tool_call["arguments"])
+            working_dir = Path(
+                str(self.tool_context.get("working_dir", getattr(self, "working_dir", Path.cwd())))
+            ).resolve()
+            file_snapshot = capture_file_snapshot(tool_name, args=args, working_dir=working_dir)
             console.print(
                 f"[dim]Calling tool {tool_name}: {self._summarize_tool_arguments(args)}[/dim]"
             )
@@ -684,6 +695,9 @@ class Agent:
                 result = self._run_async(tool.execute(**args))
             status = "failed" if result.startswith("Error") else "completed"
             console.print(f"[dim]Tool {tool_name} {status}[/dim]")
+            file_change_preview = build_file_change_preview(file_snapshot, result=result)
+            if file_change_preview is not None:
+                self._display_file_change_preview(file_change_preview)
 
             # Truncate result if too long
             max_result_len = 10000
@@ -701,6 +715,28 @@ class Agent:
             if self.debug:
                 raise
             return f"Error executing tool: {e}"
+
+    def _display_file_change_preview(self, preview: FileChangePreview) -> None:
+        """Render a styled diff panel after a file mutation succeeds."""
+        action_label = "Created file" if preview.operation == "created" else "Updated file"
+        title = Text(preview.path, style="bold")
+        title.append(f" +{preview.added_lines}", style="green")
+        title.append(f" -{preview.removed_lines}", style="red")
+        subtitle = Text("Diff preview truncated.", style="dim") if preview.truncated else None
+
+        console.print()
+        console.print(f"[dim]{action_label}[/dim]")
+        console.print(
+            Panel(
+                Syntax(preview.diff, "diff", line_numbers=True, word_wrap=False),
+                title=title,
+                subtitle=subtitle,
+                title_align="left",
+                subtitle_align="right",
+                border_style="green" if preview.operation == "created" else "yellow",
+                padding=(0, 1),
+            )
+        )
 
     def _display_response(self, content: str) -> None:
         """Display assistant response with formatting."""
