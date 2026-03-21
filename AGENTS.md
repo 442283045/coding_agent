@@ -1,103 +1,103 @@
 # AGENTS.md
 
-## Scope
+## 适用范围
 
-These instructions apply to the whole repository rooted here.
+这些说明适用于此处为根目录的整个仓库。
 
-## Project Summary
+## 项目概览
 
-- This project is an AI-powered CLI coding agent.
-- The main package is `coding_agent/`.
-- Key areas:
-  - `coding_agent/cli.py`: Typer CLI entrypoint.
-  - `coding_agent/config.py`: Pydantic settings and environment loading.
-  - `coding_agent/agent/`: agent loop and orchestration.
-  - `coding_agent/llm/`: provider-facing LLM client code.
-  - `coding_agent/tools/`: tool registration and tool implementations.
-  - `tests/`: pytest test suite.
+- 这是一个由 AI 驱动的 CLI 编码代理项目。
+- 主包为 `coding_agent/`。
+- 关键区域：
+  - `coding_agent/cli.py`：Typer CLI 入口。
+  - `coding_agent/config.py`：Pydantic 配置与环境变量加载。
+  - `coding_agent/agent/`：代理循环与编排。
+  - `coding_agent/llm/`：面向模型提供方的 LLM 客户端代码。
+  - `coding_agent/tools/`：工具注册与工具实现。
+  - `tests/`：pytest 测试套件。
 
-## Python Baseline
+## Python 基线
 
-- Target Python `3.14` for all new code and meaningful refactors.
-- Prefer modern Python syntax over legacy compatibility patterns.
-- If a change introduces Python 3.12+ syntax that affects repo tooling, update the relevant `pyproject.toml` settings in the same change when appropriate.
+- 所有新代码和有意义的重构都以 Python `3.14` 为目标版本。
+- 优先使用现代 Python 语法，而不是为兼容旧版本保留的写法。
+- 如果某次变更引入了会影响仓库工具链的 Python 3.12+ 语法，请在合适时同步更新相关的 `pyproject.toml` 配置。
 
-## Coding Style
+## 编码风格
 
-- Prefer `pathlib.Path` over `os.path`.
-- Prefer `collections.abc` types such as `Callable`, `Iterable`, `Mapping`, and `Sequence` over legacy `typing` container imports.
-- Prefer `X | Y` over `Optional[X]` and `Union[X, Y]`.
-- Prefer `type Alias = ...` for type aliases when it improves clarity.
-- Use `Self`, `Protocol`, `TypedDict`, `Literal`, `ClassVar`, and `@override` where they make intent clearer.
-- Use structural pattern matching (`match`) when it materially improves readability over long dispatch chains.
-- Prefer f-strings, comprehensions, context managers, and other modern stdlib patterns instead of manual boilerplate.
-- Keep functions focused and side effects explicit.
-- Use clear docstrings on public modules, classes, and functions.
+- 优先使用 `pathlib.Path`，而不是 `os.path`。
+- 优先使用 `collections.abc` 中的类型，如 `Callable`、`Iterable`、`Mapping` 和 `Sequence`，而不是旧式 `typing` 容器导入。
+- 优先使用 `X | Y`，而不是 `Optional[X]` 和 `Union[X, Y]`。
+- 当类型别名能提升可读性时，优先使用 `type Alias = ...`。
+- 在能更清楚表达意图时，使用 `Self`、`Protocol`、`TypedDict`、`Literal`、`ClassVar` 和 `@override`。
+- 当结构化模式匹配（`match`）相比冗长的分发链能显著提升可读性时，优先使用它。
+- 优先使用 f-string、推导式、上下文管理器和其他现代标准库写法，而不是手写样板代码。
+- 保持函数职责单一，并让副作用显式可见。
+- 为公共模块、类和函数编写清晰的文档字符串。
 
-## Typing Expectations
+## 类型标注要求
 
-- Add type annotations to all new public functions, methods, class attributes, and module-level constants.
-- Prefer precise types over `Any`. Treat `Any` as a last resort for external library boundaries.
-- Narrow unknown JSON-like data at the boundary instead of passing `dict[str, Any]` deep into the codebase.
-- Use small typed helper models for structured data:
-  - `BaseModel` for validated external/config payloads.
-  - `@dataclass(slots=True)` or small classes for internal structured state when Pydantic is unnecessary.
-  - `TypedDict` or `Protocol` for lightweight message or tool payload contracts.
-- Keep mypy friendliness in mind even if the current codebase is still catching up.
+- 为所有新的公共函数、方法、类属性和模块级常量添加类型注解。
+- 优先使用精确类型，而不是 `Any`。仅在外部库边界上将 `Any` 作为最后手段。
+- 在边界处收窄未知的类 JSON 数据，而不是把 `dict[str, Any]` 一路传到代码深层。
+- 为结构化数据使用小型、带类型的辅助模型：
+  - `BaseModel`：用于校验外部输入或配置负载。
+  - `@dataclass(slots=True)` 或小型类：用于 Pydantic 不必要时的内部结构化状态。
+  - `TypedDict` 或 `Protocol`：用于轻量级消息或工具负载契约。
+- 即使当前代码库仍在逐步完善，也要尽量兼顾 mypy 友好性。
 
-## Architecture Notes
+## 架构说明
 
-- Preserve the separation between CLI, agent orchestration, LLM integration, and tool implementations.
-- Tool code should stay side-effect aware, validate inputs early, and return user-readable results.
-- When changing tool registration or schemas, keep OpenAI-compatible and Anthropic-compatible formatting behavior aligned.
-- Prefer adding helper functions over growing already-large methods such as the core agent loop.
-- Avoid hidden global state beyond the existing shared settings/registry patterns unless there is a strong reason.
+- 保持 CLI、代理编排、LLM 集成和工具实现之间的职责分离。
+- 工具代码应明确感知副作用、尽早校验输入，并返回用户可读的结果。
+- 当修改工具注册或 schema 时，保持 OpenAI 兼容和 Anthropic 兼容的格式化行为一致。
+- 相比继续膨胀已有的大型方法（例如核心代理循环），更优先新增辅助函数。
+- 除非有充分理由，否则避免在现有共享设置/注册表模式之外引入隐藏的全局状态。
 
-## Async and IO
+## 异步与 IO
 
-- Prefer async-first implementations for network, subprocess, and other IO-bound paths.
-- Do not introduce blocking work into async paths without isolating it clearly.
-- Use explicit encodings for file IO, normally UTF-8.
-- Keep filesystem access rooted to the working directory when operating inside tools.
+- 对网络、子进程以及其他 IO 密集型路径，优先采用异步优先实现。
+- 不要在异步路径中混入阻塞式工作，除非清楚地将其隔离出来。
+- 文件 IO 使用显式编码，通常为 UTF-8。
+- 在工具内部进行文件系统访问时，应将作用范围限定在工作目录内。
 
-## CLI and UX
+## CLI 与用户体验
 
-- Preserve the Typer + Rich based CLI style already used in the repository.
-- Error messages should be actionable and concise.
-- Show a visible loading state for operations that may take noticeable time, especially model thinking before the first response token, tool execution, and MCP configuration or reload flows. When a provider streams `reasoning_content`, surface it as dim grey preview text instead of leaving the user with no visible progress.
-- Do not silently weaken safety checks around shell execution or filesystem boundaries.
+- 保留仓库中已使用的基于 Typer + Rich 的 CLI 风格。
+- 错误信息应简洁且可执行。
+- 对于可能耗时明显的操作，应显示可见的加载状态，尤其是模型在输出首个响应 token 之前的思考阶段、工具执行，以及 MCP 配置或重载流程。当提供方流式返回 `reasoning_content` 时，应将其显示为浅灰色预览文本，而不是让用户在无可见进度的情况下等待。
+- 不要悄悄削弱围绕 Shell 执行或文件系统边界的安全检查。
 
-## Testing and Verification
+## 测试与验证
 
-- Add or update pytest coverage for behavior changes.
-- Favor focused unit tests in `tests/` for:
-  - tool registration
-  - file and shell safety behavior
-  - config parsing
-  - LLM message and tool formatting
-- Run the most relevant checks after changes:
+- 对行为变更添加或更新 pytest 覆盖。
+- 优先在 `tests/` 中编写聚焦的单元测试，覆盖：
+  - 工具注册
+  - 文件与 Shell 安全行为
+  - 配置解析
+  - LLM 消息与工具格式化
+- 变更后运行最相关的检查：
   - `uv run pytest`
   - `uv run ruff check .`
   - `uv run ruff format .`
   - `uv run mypy coding_agent`
 
-## Change Guidelines
+## 变更指南
 
-- Make small, reviewable changes instead of broad rewrites unless explicitly requested.
-- Preserve existing public CLI commands and tool names unless the task requires a breaking change.
-- Update `README.md` when user-facing behavior, setup steps, or commands change.
-- When touching older code, improve typing and structure opportunistically, but avoid unrelated churn.
+- 除非明确要求，否则应做小而易审阅的改动，而不是大范围重写。
+- 除非任务明确要求破坏性变更，否则保留现有公开 CLI 命令和工具名称。
+- 当用户可见行为、安装步骤或命令发生变化时，更新 `README.md`。
+- 修改旧代码时，可以顺手改进类型和结构，但要避免无关的额外改动。
 
-## Preferred Patterns
+## 首选模式
 
-- Prefer:
-  - `Path` objects
-  - explicit return types
-  - narrow exceptions
-  - immutable or append-only data flows where practical
-  - helper functions for parsing, normalization, and schema conversion
-- Avoid:
-  - untyped dictionaries passed across multiple layers
-  - large monolithic functions growing further
-  - compatibility shims for Python versions older than 3.14
-  - introducing new dependencies without clear benefit
+- 优先：
+  - `Path` 对象
+  - 显式返回类型
+  - 精确而收窄的异常处理
+  - 在可行时采用不可变或仅追加的数据流
+  - 用于解析、规范化和 schema 转换的辅助函数
+- 避免：
+  - 在多层之间传递未标注类型的字典
+  - 让大型单体函数继续膨胀
+  - 为低于 Python 3.14 的版本添加兼容性垫片
+  - 在收益不明确时引入新依赖
