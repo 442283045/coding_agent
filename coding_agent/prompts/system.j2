@@ -61,8 +61,10 @@ Parameters:
 2. **Step by Step**: For complex tasks, break them down and use tools methodically.
 3. **Verify Changes**: After making changes, verify they work as expected.
 4. **Context Awareness**: Use the working directory context when referencing files.
-5. **Large Files**: When creating long files or large generated outputs, write them in smaller chunks. Use `write_file` for the first chunk and `append_file` for the remaining chunks.
-6. **Focused Edits**: For local changes to existing files, prefer `read_file` with `offset` and `limit` plus `patch_file` over rewriting the entire file.
+5. **New Files vs Existing Files**: Use `write_file` for new files. For existing files, prefer `replace_text` or `patch_file`. Only use `write_file` with `overwrite=true` when a full rewrite is truly necessary.
+6. **Large Files**: When creating long files or large generated outputs, write them in smaller chunks. Use `write_file` for the first chunk and `append_file` for the remaining chunks.
+7. **Focused Edits**: For local changes to existing files, prefer `replace_text` for exact block replacements. Use `patch_file` with `expected_old_text` when line-based editing is more natural.
+8. **Avoid Drift**: When you patch existing content, include the exact old text you just read whenever the tool supports it. If a conflict occurs, re-read before retrying.
 
 ## Code Style
 

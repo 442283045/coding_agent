@@ -1,6 +1,7 @@
 """Tests for tool registry."""
 
 import pytest
+from pydantic import BaseModel, ConfigDict, Field
 
 from coding_agent.tools.registry import Tool, ToolRegistry, registry
 
@@ -95,3 +96,27 @@ def test_registry_list_tools():
     _ = (code_tools, file_tools, shell_tools)
     tools = registry.list_tools()
     assert len(tools) > 0
+
+
+@pytest.mark.asyncio
+async def test_tool_input_model_validates_and_exports_schema(clean_registry) -> None:
+    """Decorator-based tools should validate inputs with a Pydantic model."""
+
+    class SearchInput(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        query: str = Field(description="Search query")
+        limit: int = Field(default=10, ge=1, description="Result limit")
+
+    @clean_registry.tool("search", "Search tool", input_model=SearchInput)
+    async def search(query: str, limit: int = 10) -> str:
+        return f"{query}:{limit}"
+
+    tool = clean_registry.get("search")
+
+    assert tool is not None
+    assert await tool.execute(query="docs", limit="3") == "docs:3"
+    assert tool.to_openai_format()["function"]["parameters"]["properties"]["limit"]["minimum"] == 1
+
+    with pytest.raises(ValueError):
+        await tool.execute(query="docs", limit="zero")

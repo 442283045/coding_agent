@@ -6,7 +6,7 @@ from difflib import unified_diff
 from pathlib import Path
 from typing import Literal
 
-FILE_EDIT_TOOL_NAMES = frozenset({"write_file", "append_file", "patch_file"})
+FILE_EDIT_TOOL_NAMES = frozenset({"write_file", "append_file", "patch_file", "replace_text"})
 _DIFF_PREVIEW_LINE_LIMIT = 240
 _DIFF_PREVIEW_CHAR_LIMIT = 12_000
 

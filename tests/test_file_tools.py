@@ -10,8 +10,10 @@ from coding_agent.tools.file_tools import (
     list_directory,
     patch_file,
     read_file,
+    replace_text,
     write_file,
 )
+from coding_agent.tools.registry import registry
 
 
 @pytest.fixture
@@ -98,6 +100,35 @@ async def test_append_file(temp_dir):
 
 
 @pytest.mark.asyncio
+async def test_write_file_refuses_to_overwrite_existing_file_by_default(temp_dir):
+    """write_file should protect existing files unless overwrite is explicit."""
+    ctx = {"working_dir": temp_dir}
+
+    await write_file(path="safe.txt", content="original", ctx=ctx)
+    result = await write_file(path="safe.txt", content="replacement", ctx=ctx)
+
+    assert "already exists" in result
+    assert Path(temp_dir, "safe.txt").read_text(encoding="utf-8") == "original"
+
+
+@pytest.mark.asyncio
+async def test_write_file_can_overwrite_when_explicitly_enabled(temp_dir):
+    """write_file should still support full rewrites when overwrite=true."""
+    ctx = {"working_dir": temp_dir}
+
+    await write_file(path="rewrite.txt", content="old", ctx=ctx)
+    result = await write_file(
+        path="rewrite.txt",
+        content="new",
+        overwrite=True,
+        ctx=ctx,
+    )
+
+    assert "Successfully wrote" in result
+    assert Path(temp_dir, "rewrite.txt").read_text(encoding="utf-8") == "new"
+
+
+@pytest.mark.asyncio
 async def test_patch_file_replaces_selected_lines(temp_dir):
     """Patching should replace only the requested line range."""
     ctx = {"working_dir": temp_dir}
@@ -167,6 +198,26 @@ async def test_patch_file_can_delete_a_module_block(temp_dir):
 
 
 @pytest.mark.asyncio
+async def test_patch_file_detects_expected_old_text_conflicts(temp_dir):
+    """expected_old_text should prevent stale line-range patches from landing."""
+    ctx = {"working_dir": temp_dir}
+    content = "first\nsecond\nthird\n"
+    await write_file(path="conflict.txt", content=content, ctx=ctx)
+
+    result = await patch_file(
+        path="conflict.txt",
+        start_line=2,
+        end_line=2,
+        new_content="updated",
+        expected_old_text="stale text",
+        ctx=ctx,
+    )
+
+    assert "Patch conflict" in result
+    assert Path(temp_dir, "conflict.txt").read_text(encoding="utf-8") == content
+
+
+@pytest.mark.asyncio
 async def test_patch_file_preserves_existing_line_endings(temp_dir):
     """Patching should preserve CRLF files instead of rewriting them with LF."""
     ctx = {"working_dir": temp_dir}
@@ -208,3 +259,67 @@ async def test_patch_file_rejects_invalid_ranges(temp_dir):
         ctx=ctx,
     )
     assert "outside 'range.py'" in out_of_range
+
+
+@pytest.mark.asyncio
+async def test_replace_text_replaces_a_unique_match(temp_dir):
+    """replace_text should safely replace an exact block without line numbers."""
+    ctx = {"working_dir": temp_dir}
+    await write_file(path="replace.py", content="alpha\nbeta\ngamma\n", ctx=ctx)
+
+    result = await replace_text(
+        path="replace.py",
+        old_text="beta",
+        new_text="delta",
+        ctx=ctx,
+    )
+
+    assert "Successfully replaced 1 occurrence" in result
+    assert Path(temp_dir, "replace.py").read_text(encoding="utf-8") == "alpha\ndelta\ngamma\n"
+
+
+@pytest.mark.asyncio
+async def test_replace_text_rejects_ambiguous_matches_without_occurrence(temp_dir):
+    """replace_text should reject ambiguous blocks unless the caller narrows the match."""
+    ctx = {"working_dir": temp_dir}
+    await write_file(path="ambiguous.txt", content="x\nrepeat\nrepeat\n", ctx=ctx)
+
+    result = await replace_text(
+        path="ambiguous.txt",
+        old_text="repeat",
+        new_text="done",
+        ctx=ctx,
+    )
+
+    assert "expected 1" in result
+
+
+@pytest.mark.asyncio
+async def test_replace_text_can_target_a_specific_occurrence(temp_dir):
+    """replace_text should handle repeated blocks when occurrence is specified."""
+    ctx = {"working_dir": temp_dir}
+    await write_file(path="occurrence.txt", content="repeat\nrepeat\n", ctx=ctx)
+
+    result = await replace_text(
+        path="occurrence.txt",
+        old_text="repeat",
+        new_text="done",
+        occurrence=2,
+        ctx=ctx,
+    )
+
+    assert "Successfully replaced 1 occurrence" in result
+    assert Path(temp_dir, "occurrence.txt").read_text(encoding="utf-8") == "repeat\ndone\n"
+
+
+@pytest.mark.asyncio
+async def test_read_file_tool_validation_rejects_non_integer_limit(temp_dir):
+    """Tool execution should validate read_file arguments before the function runs."""
+    ctx = {"working_dir": temp_dir}
+    await write_file(path="typed.txt", content="a\nb\n", ctx=ctx)
+    tool = registry.get("read_file")
+
+    assert tool is not None
+
+    with pytest.raises(ValueError):
+        await tool.execute(path="typed.txt", offset=1, limit="all", ctx=ctx)

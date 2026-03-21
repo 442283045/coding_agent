@@ -9,6 +9,7 @@
 - 🧠 支持项目本地 `SKILL.md` 工作流的工作区技能发现
 - 🔍 使用 Tree-sitter 进行代码搜索与分析
 - 📝 提供带安全检查的文件读写/补丁能力，并支持对大型生成文件进行分块追加
+- 🧩 提供精确文本替换、冲突检测和文件变更 diff 预览，降低编辑失败概率
 - 🔒 原生 Shell 命令执行，并根据操作系统提供相应提示
 - 💾 会话历史管理
 
@@ -106,6 +107,7 @@ coding-agent chat --debug
 启动横幅会显示 `Workspace`，并在提供 `-w/--workspace` 时保留其值。
 工具调用在运行时会显示在控制台中。
 文件编辑工具在成功修改文件后，会额外显示一个带行级着色的 diff 预览面板。
+已有文件默认不会被 `write_file` 直接覆盖；代理会优先使用 `replace_text` 或带 `expected_old_text` 的 `patch_file` 做局部编辑。
 耗时较长的工具执行，以及 MCP 配置或重新加载流程，在交互模式下都会显示可见的加载状态。
 代理在等待模型输出首个流式内容时，也会显示 `Thinking...` 加载状态。
 当模型流式返回 `reasoning_content` 时，CLI 会在主回答之前及其过程中，以浅灰色预览文本显示这部分内容。
@@ -130,7 +132,7 @@ coding-agent chat --debug
 下发现的、工作区本地已安装技能。系统提示词也会告知这些技能，以便代理在需要时检查匹配的 `SKILL.md`。
 `execute_shell` 现在会在当前平台检测到的原生 Shell 中执行任意命令：Windows 使用 PowerShell，macOS/Linux 使用 bash。
 在生成大型文件时，代理现在可以先调用 `write_file`，再通过 `append_file` 分段写入，以避免过大的工具调用负载。
-对于已有文件的局部编辑，代理可以先用 `read_file` 读取小范围行号，再通过 `patch_file` 仅替换或删除该代码块。
+对于已有文件的局部编辑，代理会优先先用 `read_file` 读取目标片段，再通过 `replace_text` 做精确替换；如果更适合按行修改，则会使用带 `expected_old_text` 的 `patch_file` 来检测内容漂移并避免误改。
 
 ### 单次命令模式
 

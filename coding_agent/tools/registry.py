@@ -3,7 +3,7 @@
 import inspect
 from collections.abc import Awaitable, Callable, Mapping
 from copy import deepcopy
-from typing import Any, Literal, get_args, get_origin
+from typing import Any, Literal, cast, get_args, get_origin
 
 from pydantic import BaseModel
 
@@ -17,6 +17,42 @@ class ToolParameter(BaseModel):
     required: bool = True
 
 
+def _tool_parameters_from_input_model(input_model: type[BaseModel]) -> list[ToolParameter]:
+    """Build prompt-friendly parameter metadata from a Pydantic input model."""
+    schema = input_model.model_json_schema()
+    properties = cast(dict[str, dict[str, Any]], schema.get("properties", {}))
+    required_names = set(cast(list[str], schema.get("required", [])))
+    parameters: list[ToolParameter] = []
+
+    for name, property_schema in properties.items():
+        schema_type = property_schema.get("type")
+        if not isinstance(schema_type, str):
+            if isinstance(property_schema.get("anyOf"), list):
+                variants = [
+                    str(option.get("type"))
+                    for option in property_schema["anyOf"]
+                    if isinstance(option, Mapping) and option.get("type") is not None
+                ]
+                schema_type = " | ".join(variants) if variants else "string"
+            else:
+                schema_type = "string"
+
+        description = property_schema.get("description")
+        if not isinstance(description, str) or not description:
+            description = f"Parameter {name}"
+
+        parameters.append(
+            ToolParameter(
+                name=name,
+                type=schema_type,
+                description=description,
+                required=name in required_names,
+            )
+        )
+
+    return parameters
+
+
 class Tool:
     """A tool that can be called by the agent."""
 
@@ -28,20 +64,35 @@ class Tool:
         parameters: list[ToolParameter] | None = None,
         *,
         input_schema: Mapping[str, Any] | None = None,
+        input_model: type[BaseModel] | None = None,
         source: Literal["local", "mcp"] = "local",
         metadata: Mapping[str, Any] | None = None,
     ) -> None:
+        if input_schema is not None and input_model is not None:
+            raise ValueError("Tool cannot define both input_schema and input_model.")
+
         self.name = name
         self.description = description
         self.func = func
         self.parameters = parameters or []
         self.input_schema = dict(input_schema) if input_schema is not None else None
+        self.input_model = input_model
         self.source = source
         self.metadata = dict(metadata) if metadata is not None else {}
 
     async def execute(self, **kwargs: Any) -> str:
         """Execute the tool with given arguments."""
-        result = await self.func(**kwargs)
+        validated_kwargs = dict(kwargs)
+        context = validated_kwargs.pop("ctx", None)
+
+        if self.input_model is not None:
+            validated_input = self.input_model.model_validate(validated_kwargs)
+            validated_kwargs = validated_input.model_dump(mode="python")
+
+        if context is not None:
+            validated_kwargs["ctx"] = context
+
+        result = await self.func(**validated_kwargs)
         return str(result) if result is not None else ""
 
     def copy(self) -> Tool:
@@ -52,6 +103,7 @@ class Tool:
             func=self.func,
             parameters=[parameter.model_copy(deep=True) for parameter in self.parameters],
             input_schema=deepcopy(self.input_schema),
+            input_model=self.input_model,
             source=self.source,
             metadata=deepcopy(self.metadata),
         )
@@ -60,6 +112,8 @@ class Tool:
         """Return the JSON schema used by provider tool APIs."""
         if self.input_schema is not None:
             return deepcopy(self.input_schema)
+        if self.input_model is not None:
+            return self.input_model.model_json_schema()
 
         return {
             "type": "object",
@@ -162,32 +216,48 @@ class ToolRegistry:
         self,
         name: str,
         description: str,
+        *,
+        input_model: type[BaseModel] | None = None,
+        input_schema: Mapping[str, Any] | None = None,
     ) -> Callable[[Callable[..., Awaitable[Any]]], Callable[..., Awaitable[Any]]]:
         """Decorator to register a function as a tool."""
 
         def decorator(func: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
+            if input_model is not None and input_schema is not None:
+                raise ValueError("tool decorator accepts only one of input_model or input_schema.")
+
             sig = inspect.signature(func)
             params: list[ToolParameter] = []
 
-            for param_name, param in sig.parameters.items():
-                # Skip 'ctx' parameter (injected context)
-                if param_name == "ctx":
-                    continue
+            if input_model is not None:
+                params = _tool_parameters_from_input_model(input_model)
+            else:
+                for param_name, param in sig.parameters.items():
+                    # Skip 'ctx' parameter (injected context)
+                    if param_name == "ctx":
+                        continue
 
-                param_type = get_type_schema(param.annotation)
-                is_required = param.default is inspect.Parameter.empty
-                default_desc = f" (default: {param.default})" if not is_required else ""
+                    param_type = get_type_schema(param.annotation)
+                    is_required = param.default is inspect.Parameter.empty
+                    default_desc = f" (default: {param.default})" if not is_required else ""
 
-                params.append(
-                    ToolParameter(
-                        name=param_name,
-                        type=param_type,
-                        description=f"Parameter {param_name}{default_desc}",
-                        required=is_required,
+                    params.append(
+                        ToolParameter(
+                            name=param_name,
+                            type=param_type,
+                            description=f"Parameter {param_name}{default_desc}",
+                            required=is_required,
+                        )
                     )
-                )
 
-            tool = Tool(name, description, func, params)
+            tool = Tool(
+                name,
+                description,
+                func,
+                params,
+                input_model=input_model,
+                input_schema=input_schema,
+            )
             self.register(tool)
             return func
 

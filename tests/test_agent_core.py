@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import BaseModel, ConfigDict, Field
 
 from coding_agent.agent.core import PROMPT_STYLE, Agent
 from coding_agent.agent.slash_commands import SlashCommandCompleter, SlashCommandResult
@@ -800,6 +801,44 @@ def test_execute_tool_returns_retry_guidance_for_truncated_arguments(
     assert "Tool arguments were truncated" in result
     assert "write_file" in result
     assert "append_file" in result
+
+
+def test_execute_tool_surfaces_validation_errors(monkeypatch, tmp_path: Path) -> None:
+    """Validated tool inputs should be reported back as actionable argument errors."""
+
+    class DemoInput(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+        path: str
+        limit: int = Field(ge=1)
+
+    registry = ToolRegistry()
+
+    @registry.tool("validated_tool", "Validated tool", input_model=DemoInput)
+    async def validated_tool(path: str, limit: int) -> str:
+        return f"{path}:{limit}"
+
+    monkeypatch.setattr(
+        "coding_agent.agent.core.console.print",
+        lambda *args, **kwargs: None,
+    )
+
+    agent = Agent.__new__(Agent)
+    agent.registry = registry
+    agent.tool_context = {"working_dir": str(tmp_path), "debug": False}
+    agent.debug = False
+
+    result = Agent._execute_tool(
+        agent,
+        {
+            "name": "validated_tool",
+            "arguments": '{"path": "demo.py", "limit": "oops"}',
+        },
+    )
+
+    assert result.startswith(
+        "Error: Invalid tool arguments - limit: Input should be a valid integer"
+    )
 
 
 def test_process_message_handles_claude_truncated_tool_arguments(

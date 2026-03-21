@@ -12,6 +12,7 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.styles import Style
+from pydantic import ValidationError
 from rich.console import Console, Group, RenderableType
 from rich.live import Live
 from rich.markdown import Markdown
@@ -350,6 +351,13 @@ class Agent:
                 "length limit. Retry with smaller arguments. For large file writes, use "
                 "write_file for the first chunk and append_file for the remaining chunks."
             )
+        if isinstance(error, ValidationError):
+            details = []
+            for issue in error.errors():
+                location = ".".join(str(part) for part in issue.get("loc", ()))
+                message = issue.get("msg", "Invalid input.")
+                details.append(f"{location}: {message}" if location else str(message))
+            return "Error: Invalid tool arguments - " + "; ".join(details)
         return f"Error: Invalid tool arguments - {error}"
 
     def _build_anthropic_tool_input(

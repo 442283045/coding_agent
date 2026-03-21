@@ -4,12 +4,124 @@ from pathlib import Path
 from typing import Any
 
 import pathspec
-from rich.console import Console
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from coding_agent.config import settings
 from coding_agent.tools.registry import registry
 
-console = Console()
+
+class _FileToolInput(BaseModel):
+    """Shared validation rules for workspace-bounded file tools."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(
+        min_length=1,
+        description="Relative path to a file inside the working directory.",
+    )
+
+
+class ReadFileInput(_FileToolInput):
+    """Validated arguments for reading a text file."""
+
+    offset: int = Field(
+        default=1,
+        ge=1,
+        description="1-based starting line number to read from.",
+    )
+    limit: int | None = Field(
+        default=None,
+        ge=1,
+        description="Maximum number of lines to read. Omit to read through the end.",
+    )
+
+
+class WriteFileInput(_FileToolInput):
+    """Validated arguments for creating or fully rewriting a file."""
+
+    content: str = Field(description="Complete text content to write to the file.")
+    overwrite: bool = Field(
+        default=False,
+        description=(
+            "Whether to replace an existing file. Leave false for new files and use "
+            "patch_file or replace_text for focused edits."
+        ),
+    )
+
+
+class AppendFileInput(_FileToolInput):
+    """Validated arguments for appending to an existing or new file."""
+
+    content: str = Field(description="Text content to append to the end of the file.")
+    create: bool = Field(
+        default=True,
+        description="Whether to create the file when it does not already exist.",
+    )
+
+
+class PatchFileInput(_FileToolInput):
+    """Validated arguments for line-range replacements."""
+
+    start_line: int = Field(
+        ge=1,
+        description="1-based starting line number of the inclusive range to replace.",
+    )
+    end_line: int = Field(
+        ge=1,
+        description="1-based ending line number of the inclusive range to replace.",
+    )
+    new_content: str = Field(
+        description=(
+            "Replacement text for the selected line range. Use an empty string to delete it."
+        ),
+    )
+    expected_old_text: str | None = Field(
+        default=None,
+        description=(
+            "Optional exact text currently expected in the selected line range. "
+            "Use the text returned by read_file to detect drift before patching."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def validate_line_range(self) -> PatchFileInput:
+        """Ensure the requested patch range is well formed."""
+        if self.end_line < self.start_line:
+            raise ValueError("end_line must be greater than or equal to start_line.")
+        return self
+
+
+class ReplaceTextInput(_FileToolInput):
+    """Validated arguments for exact text replacement."""
+
+    old_text: str = Field(
+        min_length=1,
+        description="Exact existing text to replace. Read it from the file first to avoid drift.",
+    )
+    new_text: str = Field(
+        description="Replacement text. Use an empty string to delete the matched text.",
+    )
+    occurrence: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "1-based occurrence to replace when the old text appears multiple times. "
+            "Omit to require the match count specified by expected_replacements."
+        ),
+    )
+    expected_replacements: int = Field(
+        default=1,
+        ge=1,
+        description=(
+            "Expected number of matches when occurrence is omitted. Defaults to 1 to "
+            "prevent ambiguous replacements."
+        ),
+    )
+
+
+def _resolve_workspace_path(path: str, working_dir: Path) -> Path:
+    """Resolve a relative workspace path against the active working directory."""
+    return (working_dir / path).resolve()
 
 
 def _get_working_dir(ctx: dict[str, Any] | None) -> Path:
@@ -35,6 +147,16 @@ def _is_path_safe(path: Path, working_dir: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+def _normalize_newlines(text: str) -> str:
+    """Normalize all newlines in a text buffer to LF."""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _normalize_match_text(text: str) -> str:
+    """Normalize text for exact-match comparisons across newline styles."""
+    return _normalize_newlines(text).rstrip("\n")
 
 
 def _detect_newline(content: str) -> str:
@@ -65,10 +187,36 @@ def _normalize_patch_content(
     return replacement
 
 
+def _truncate_preview(text: str, *, limit: int = 400) -> str:
+    """Trim a block preview so error messages stay readable."""
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "\n... [truncated]"
+
+
+def _replace_nth_occurrence(content: str, old_text: str, new_text: str, occurrence: int) -> str:
+    """Replace the requested 1-based occurrence of a substring."""
+    search_start = 0
+    match_start = -1
+
+    for _ in range(occurrence):
+        match_start = content.find(old_text, search_start)
+        if match_start == -1:
+            raise ValueError("occurrence is outside the number of matches in the file.")
+        search_start = match_start + len(old_text)
+
+    return (
+        f"{content[:match_start]}{new_text}{content[match_start + len(old_text) :]}"
+        if match_start >= 0
+        else content
+    )
+
+
 @registry.tool(
     name="read_file",
     description="Read the contents of a file. Returns the file content as a string. "
     "Use offset and limit to read specific portions of large files.",
+    input_model=ReadFileInput,
 )
 async def read_file(
     path: str,
@@ -78,7 +226,7 @@ async def read_file(
 ) -> str:
     """Read file contents with optional line range."""
     working_dir = _get_working_dir(ctx)
-    file_path = (working_dir / path).resolve()
+    file_path = _resolve_workspace_path(path, working_dir)
 
     # Security check
     if not _is_path_safe(file_path, working_dir):
@@ -127,22 +275,33 @@ async def read_file(
 
 @registry.tool(
     name="write_file",
-    description="Write content to a file. Creates the file if it doesn't exist and "
-    "overwrites any existing content. For large files, write the first chunk with "
-    "this tool and append the remaining chunks with append_file.",
+    description="Create a new text file or fully rewrite an existing one. By default, "
+    "this refuses to overwrite existing files; use overwrite=true only after reviewing "
+    "the current file. For local edits, prefer replace_text or patch_file.",
+    input_model=WriteFileInput,
 )
 async def write_file(
     path: str,
     content: str,
+    overwrite: bool = False,
     ctx: dict[str, Any] | None = None,
 ) -> str:
     """Write content to a file."""
     working_dir = _get_working_dir(ctx)
-    file_path = (working_dir / path).resolve()
+    file_path = _resolve_workspace_path(path, working_dir)
 
     # Security check
     if not _is_path_safe(file_path, working_dir):
         return f"Error: Access denied. Path '{path}' is outside working directory."
+
+    if file_path.exists() and not file_path.is_file():
+        return f"Error: '{path}' is not a file."
+
+    if file_path.exists() and not overwrite:
+        return (
+            f"Error: File '{path}' already exists. Use replace_text or patch_file for "
+            "focused edits, or retry write_file with overwrite=true after reviewing it."
+        )
 
     # Create parent directories if needed
     try:
@@ -156,20 +315,28 @@ async def write_file(
 @registry.tool(
     name="append_file",
     description="Append content to the end of a file. Creates the file if it doesn't "
-    "exist. Use this after write_file when a large file needs to be written in "
-    "multiple chunks.",
+    "exist by default. Use this after write_file when a large file needs to be written "
+    "in multiple chunks.",
+    input_model=AppendFileInput,
 )
 async def append_file(
     path: str,
     content: str,
+    create: bool = True,
     ctx: dict[str, Any] | None = None,
 ) -> str:
     """Append content to a file."""
     working_dir = _get_working_dir(ctx)
-    file_path = (working_dir / path).resolve()
+    file_path = _resolve_workspace_path(path, working_dir)
 
     if not _is_path_safe(file_path, working_dir):
         return f"Error: Access denied. Path '{path}' is outside working directory."
+
+    if file_path.exists() and not file_path.is_file():
+        return f"Error: '{path}' is not a file."
+
+    if not file_path.exists() and not create:
+        return f"Error: File '{path}' not found. Retry with create=true to create it first."
 
     try:
         file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -184,18 +351,21 @@ async def append_file(
     name="patch_file",
     description="Replace a contiguous inclusive line range in an existing text file "
     "without rewriting the whole file. Read the relevant lines first with read_file, "
-    "then patch only that region. Use an empty new_content string to delete the range.",
+    "then patch only that region. Provide expected_old_text from read_file to detect "
+    "drift before writing.",
+    input_model=PatchFileInput,
 )
 async def patch_file(
     path: str,
     start_line: int,
     end_line: int,
     new_content: str,
+    expected_old_text: str | None = None,
     ctx: dict[str, Any] | None = None,
 ) -> str:
     """Replace a line range in a text file."""
     working_dir = _get_working_dir(ctx)
-    file_path = (working_dir / path).resolve()
+    file_path = _resolve_workspace_path(path, working_dir)
 
     if not _is_path_safe(file_path, working_dir):
         return f"Error: Access denied. Path '{path}' is outside working directory."
@@ -232,6 +402,17 @@ async def patch_file(
                 f"'{path}' ({len(lines)} lines)."
             )
 
+        selected_text = "".join(lines[start_line - 1 : end_line])
+        if expected_old_text is not None and _normalize_match_text(
+            selected_text
+        ) != _normalize_match_text(expected_old_text):
+            current_preview = _truncate_preview(_normalize_newlines(selected_text))
+            return (
+                "Error: Patch conflict. The requested line range no longer matches "
+                "expected_old_text. Re-read the file before retrying.\nCurrent text:\n```\n"
+                f"{current_preview}\n```"
+            )
+
         newline = _detect_newline(content)
         prefix = "".join(lines[: start_line - 1])
         suffix = "".join(lines[end_line:])
@@ -254,6 +435,85 @@ async def patch_file(
         return f"Error: File '{path}' is not a text file."
     except Exception as e:
         return f"Error patching file: {e}"
+
+
+@registry.tool(
+    name="replace_text",
+    description="Replace an exact text block in an existing file. Read the target text "
+    "first, then pass that exact old_text. This is safer than full-file rewrites and "
+    "avoids brittle line numbers for local edits.",
+    input_model=ReplaceTextInput,
+)
+async def replace_text(
+    path: str,
+    old_text: str,
+    new_text: str,
+    occurrence: int | None = None,
+    expected_replacements: int = 1,
+    ctx: dict[str, Any] | None = None,
+) -> str:
+    """Replace exact text within an existing text file."""
+    working_dir = _get_working_dir(ctx)
+    file_path = _resolve_workspace_path(path, working_dir)
+
+    if not _is_path_safe(file_path, working_dir):
+        return f"Error: Access denied. Path '{path}' is outside working directory."
+
+    if not file_path.exists():
+        return f"Error: File '{path}' not found."
+
+    if not file_path.is_file():
+        return f"Error: '{path}' is not a file."
+
+    file_size = file_path.stat().st_size
+    if file_size > settings.max_file_size:
+        return (
+            f"Error: File '{path}' is too large "
+            f"({file_size} bytes > {settings.max_file_size} bytes)."
+        )
+
+    try:
+        content = file_path.read_text(encoding="utf-8", newline="")
+        newline = _detect_newline(content)
+        normalized_content = _normalize_newlines(content)
+        normalized_old_text = _normalize_match_text(old_text)
+        normalized_new_text = _normalize_newlines(new_text)
+
+        match_count = normalized_content.count(normalized_old_text)
+        if match_count == 0:
+            return (
+                f"Error: old_text was not found in '{path}'. Re-read the file and copy "
+                "the exact text you want to replace."
+            )
+
+        if occurrence is not None:
+            if occurrence > match_count:
+                return (
+                    f"Error: occurrence {occurrence} is outside the {match_count} match(es) "
+                    f"found in '{path}'."
+                )
+            updated_content = _replace_nth_occurrence(
+                normalized_content,
+                normalized_old_text,
+                normalized_new_text,
+                occurrence,
+            )
+            replaced_count = 1
+        else:
+            if match_count != expected_replacements:
+                return (
+                    f"Error: replace_text found {match_count} match(es) in '{path}', but "
+                    f"expected {expected_replacements}. Narrow old_text or set occurrence."
+                )
+            updated_content = normalized_content.replace(normalized_old_text, normalized_new_text)
+            replaced_count = match_count
+
+        file_path.write_text(updated_content.replace("\n", newline), encoding="utf-8", newline="")
+        return f"Successfully replaced {replaced_count} occurrence(s) in '{path}'."
+    except UnicodeDecodeError:
+        return f"Error: File '{path}' is not a text file."
+    except Exception as e:
+        return f"Error replacing text: {e}"
 
 
 @registry.tool(
