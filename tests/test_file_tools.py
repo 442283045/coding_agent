@@ -1,6 +1,7 @@
 """Tests for file tools."""
 
 import tempfile
+import warnings
 from pathlib import Path
 
 import pytest
@@ -73,6 +74,32 @@ async def test_list_directory(temp_dir):
     result = await list_directory(path=".", recursive=False, ctx=ctx)
     assert "file1.txt" in result
     assert "file2.py" in result
+
+
+@pytest.mark.asyncio
+async def test_list_directory_respects_gitignore_without_deprecation_warning(temp_dir):
+    """Directory listing should honor .gitignore without pathspec deprecation warnings."""
+    ctx = {"working_dir": temp_dir}
+    root = Path(temp_dir)
+
+    (root / ".gitignore").write_text("ignored.txt\nignored_dir/\n", encoding="utf-8")
+    await write_file(path="visible.txt", content="keep me", ctx=ctx)
+    await write_file(path="ignored.txt", content="hide me", ctx=ctx)
+    ignored_dir = root / "ignored_dir"
+    ignored_dir.mkdir()
+    (ignored_dir / "nested.txt").write_text("nested", encoding="utf-8")
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = await list_directory(path=".", recursive=True, ctx=ctx)
+
+    assert "visible.txt" in result
+    assert "ignored.txt" not in result
+    assert "ignored_dir" not in result
+    assert not any(
+        issubclass(warning.category, DeprecationWarning) and "gitwildmatch" in str(warning.message)
+        for warning in caught
+    )
 
 
 @pytest.mark.asyncio

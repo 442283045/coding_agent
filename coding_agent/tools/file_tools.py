@@ -131,13 +131,31 @@ def _get_working_dir(ctx: dict[str, Any] | None) -> Path:
     return Path.cwd()
 
 
-def _load_gitignore(working_dir: Path) -> pathspec.PathSpec | None:
-    """Load .gitignore patterns if exists."""
+def _load_gitignore(working_dir: Path) -> pathspec.GitIgnoreSpec | None:
+    """Load .gitignore patterns when the workspace defines them."""
     gitignore_path = working_dir / ".gitignore"
-    if gitignore_path.exists():
-        content = gitignore_path.read_text(encoding="utf-8")
-        return pathspec.PathSpec.from_lines("gitwildmatch", content.splitlines())
-    return None
+    if not gitignore_path.is_file():
+        return None
+
+    content = gitignore_path.read_text(encoding="utf-8")
+    return pathspec.GitIgnoreSpec.from_lines(content.splitlines())
+
+
+def _is_gitignored(
+    rel_path: Path,
+    *,
+    gitignore: pathspec.GitIgnoreSpec | None,
+    is_dir: bool,
+) -> bool:
+    """Check whether a workspace-relative path should be filtered by .gitignore."""
+    if gitignore is None:
+        return False
+
+    normalized_path = rel_path.as_posix()
+    if is_dir and not normalized_path.endswith("/"):
+        normalized_path += "/"
+
+    return bool(gitignore.match_file(normalized_path))
 
 
 def _is_path_safe(path: Path, working_dir: Path) -> bool:
@@ -548,8 +566,7 @@ async def list_directory(
         if recursive:
             for item in sorted(dir_path.rglob("*")):
                 rel_path = item.relative_to(working_dir)
-                # Check gitignore
-                if gitignore and gitignore.match_file(str(rel_path)):
+                if _is_gitignored(rel_path, gitignore=gitignore, is_dir=item.is_dir()):
                     continue
 
                 depth = len(rel_path.parts) - 1
@@ -559,8 +576,7 @@ async def list_directory(
         else:
             for item in sorted(dir_path.iterdir()):
                 rel_path = item.relative_to(working_dir)
-                # Check gitignore
-                if gitignore and gitignore.match_file(str(rel_path)):
+                if _is_gitignored(rel_path, gitignore=gitignore, is_dir=item.is_dir()):
                     continue
 
                 icon = "📁" if item.is_dir() else "📄"
