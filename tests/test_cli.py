@@ -1,5 +1,6 @@
 """Tests for the CLI entrypoint."""
 
+import json
 from pathlib import Path
 
 from rich.console import Console
@@ -8,6 +9,7 @@ from typer.testing import CliRunner
 import coding_agent.cli as cli_module
 from coding_agent.agent.history import SessionStore
 from coding_agent.config import Settings
+from coding_agent.doctor import DoctorCheck, DoctorReport
 
 runner = CliRunner()
 
@@ -269,14 +271,15 @@ def test_chat_accepts_resume_session_option(monkeypatch, tmp_path: Path) -> None
         def __init__(
             self,
             working_dir: str | None,
-            model: str,
+            model: str | None,
             debug: bool,
             resume_session_id: str | None = None,
         ) -> None:
             captured["working_dir"] = working_dir
+            captured["model"] = model
             captured["resume_session_id"] = resume_session_id
             self.working_dir = session_workspace.resolve()
-            self.model = model
+            self.model = model or "saved-model"
             self.session_id = resume_session_id or "session-new"
 
         def run_interactive(self) -> None:
@@ -293,6 +296,7 @@ def test_chat_accepts_resume_session_option(monkeypatch, tmp_path: Path) -> None
 
     assert result.exit_code == 0
     assert captured["working_dir"] is None
+    assert captured["model"] is None
     assert captured["resume_session_id"] == "session-123"
     assert f"Workspace: {session_workspace.resolve()}" in result.output
     assert "Session: session-123" in result.output
@@ -321,11 +325,12 @@ def test_run_accepts_resume_session_option(monkeypatch) -> None:
         def __init__(
             self,
             working_dir: str | None,
-            model: str,
+            model: str | None,
             debug: bool,
             resume_session_id: str | None = None,
         ) -> None:
             captured["working_dir"] = working_dir
+            captured["model"] = model
             captured["resume_session_id"] = resume_session_id
 
         def run_once(self, prompt: str) -> str:
@@ -338,6 +343,7 @@ def test_run_accepts_resume_session_option(monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert captured["working_dir"] is None
+    assert captured["model"] is None
     assert captured["resume_session_id"] == "session-123"
     assert captured["prompt"] == "continue"
     assert "continued" in result.output
@@ -366,10 +372,11 @@ def test_sessions_list_renders_saved_sessions(monkeypatch, tmp_path: Path) -> No
     assert "Saved Sessions" in result.output
     assert session.session_id in result.output
     assert "Investigate bug" in result.output
+    assert "Last User Message" not in result.output
 
 
 def test_sessions_show_renders_resume_hint(monkeypatch, tmp_path: Path) -> None:
-    """The sessions show command should render metadata for one session."""
+    """The sessions show command should render session metadata and naming."""
 
     store = SessionStore(Settings(_env_file=None), sessions_dir=tmp_path / "sessions")
     workspace = tmp_path / "workspace"
@@ -390,4 +397,123 @@ def test_sessions_show_renders_resume_hint(monkeypatch, tmp_path: Path) -> None:
     assert result.exit_code == 0
     assert session.session_id in result.output
     assert "Review the parser" in result.output
+    assert "Name:" in result.output
+    assert "Resume with:" in result.output
     assert f"coding-agent chat --resume {session.session_id}" in result.output
+
+
+def test_sessions_rename_updates_explicit_name(monkeypatch, tmp_path: Path) -> None:
+    """The sessions rename command should persist a custom session name."""
+
+    store = SessionStore(Settings(_env_file=None), sessions_dir=tmp_path / "sessions")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    session = store.create_session(working_dir=workspace, model="gpt-4o-mini")
+
+    monkeypatch.setattr(cli_module, "_get_session_store", lambda: store)
+
+    result = runner.invoke(
+        cli_module.app,
+        ["sessions", "rename", session.session_id, "Parser triage"],
+    )
+
+    assert result.exit_code == 0
+    assert "Parser triage" in result.output
+    assert store.load_session(session.session_id).name == "Parser triage"
+
+
+def test_sessions_rename_can_clear_explicit_name(monkeypatch, tmp_path: Path) -> None:
+    """The sessions rename command should clear explicit names on request."""
+
+    store = SessionStore(Settings(_env_file=None), sessions_dir=tmp_path / "sessions")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    session = store.create_session(working_dir=workspace, model="gpt-4o-mini")
+    session.history.append({"role": "user", "content": "Investigate failing tests"})
+    store.save_session(session)
+    store.rename_session(session.session_id, "Failing tests")
+
+    monkeypatch.setattr(cli_module, "_get_session_store", lambda: store)
+
+    result = runner.invoke(
+        cli_module.app,
+        ["sessions", "rename", session.session_id, "--clear"],
+    )
+
+    assert result.exit_code == 0
+    assert "Investigate failing tests" in result.output
+    assert store.load_session(session.session_id).name is None
+
+
+def test_sessions_export_writes_json_output(monkeypatch, tmp_path: Path) -> None:
+    """The sessions export command should write JSON exports to disk."""
+
+    store = SessionStore(Settings(_env_file=None), sessions_dir=tmp_path / "sessions")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    session = store.create_session(working_dir=workspace, model="gpt-4o-mini")
+    session.history.append({"role": "user", "content": "Summarize this repo"})
+    store.save_session(session)
+    store.rename_session(session.session_id, "Repository summary")
+    output_path = tmp_path / "exports" / "session.json"
+
+    monkeypatch.setattr(cli_module, "_get_session_store", lambda: store)
+
+    result = runner.invoke(
+        cli_module.app,
+        [
+            "sessions",
+            "export",
+            session.session_id,
+            "--format",
+            "json",
+            "--output",
+            str(output_path),
+        ],
+    )
+
+    exported = json.loads(output_path.read_text(encoding="utf-8"))
+
+    assert result.exit_code == 0
+    assert output_path.exists()
+    assert exported["display_name"] == "Repository summary"
+    assert exported["history"][0]["content"] == "Summarize this repo"
+
+
+def test_doctor_command_renders_report_and_exits_on_failures(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """The doctor command should render checks and exit non-zero on blocking issues."""
+
+    report = DoctorReport(
+        working_dir=tmp_path.resolve(),
+        checks=(
+            DoctorCheck(
+                key="default_model",
+                label="Default model",
+                status="ok",
+                summary="Configured default model is `gpt-4o-mini`.",
+            ),
+            DoctorCheck(
+                key="provider_credentials",
+                label="Provider credentials",
+                status="fail",
+                summary="`gpt-4o-mini` requires `OPENAI_API_KEY`, but it is not configured.",
+            ),
+        ),
+    )
+
+    monkeypatch.setattr(cli_module, "build_doctor_report", lambda settings_obj, working_dir: report)
+    monkeypatch.setattr(
+        cli_module,
+        "console",
+        Console(width=240, force_terminal=False, color_system=None),
+    )
+
+    result = runner.invoke(cli_module.app, ["doctor", "-w", str(tmp_path)])
+
+    assert result.exit_code == 1
+    assert "Coding Agent Doctor FAIL" in result.output
+    assert "Default model" in result.output
+    assert "Provider credentials" in result.output

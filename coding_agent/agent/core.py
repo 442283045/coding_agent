@@ -9,9 +9,14 @@ from typing import Any, TypeVar, cast
 
 from jinja2 import Template
 from prompt_toolkit import PromptSession
+from prompt_toolkit.application import Application
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.history import FileHistory
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.layout import HSplit, Layout, Window
+from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.styles import Style
+from prompt_toolkit.widgets import Frame, RadioList
 from pydantic import ValidationError
 from rich.console import Console, Group, RenderableType
 from rich.live import Live
@@ -465,7 +470,206 @@ class Agent:
             reload_mcp_tools=self.reload_mcp_tools,
             list_skills=self.list_skills,
             reload_skills=self.reload_skills,
+            current_session=self.get_current_session,
+            list_sessions=self.list_saved_sessions,
+            start_new_session=self.start_new_session,
+            manage_sessions=self.manage_sessions_interactively,
         )
+
+    def get_current_session(self) -> SessionState | None:
+        """Return the active persisted session when available."""
+        session_state = getattr(self, "session_state", None)
+        if isinstance(session_state, SessionState):
+            return session_state
+        return None
+
+    def list_saved_sessions(self) -> list[SessionState]:
+        """Return saved sessions from the backing store."""
+        session_store = getattr(self, "session_store", None)
+        if isinstance(session_store, SessionStore):
+            return session_store.list_sessions()
+        return []
+
+    def _activate_session(self, session_state: SessionState) -> SessionState:
+        """Switch the agent runtime to an existing persisted session."""
+        self.session_state = session_state
+        self.session_id = session_state.session_id
+        self.working_dir = session_state.working_dir.resolve()
+        self.model = session_state.model
+        self.history = session_state.history
+        self._interaction_log_path = session_state.interaction_log_path
+
+        tool_context = getattr(self, "tool_context", None)
+        if isinstance(tool_context, dict):
+            tool_context["working_dir"] = str(self.working_dir)
+
+        if hasattr(self, "skill_manager"):
+            self.skill_manager = SkillManager(working_dir=self.working_dir)
+            self.skill_catalog = self.skill_manager.discover()
+
+        llm = getattr(self, "llm", None)
+        if isinstance(llm, LLMClient):
+            llm.model = self.model
+            if self._interaction_log_path is None:
+                llm.clear_log_path()
+            else:
+                llm.set_log_path(self._interaction_log_path)
+
+        return session_state
+
+    def start_new_session(self) -> SessionState:
+        """Create a fresh session and clear the in-memory conversation history."""
+        session_store = getattr(self, "session_store", None)
+        if not isinstance(session_store, SessionStore):
+            raise RuntimeError("Session storage is unavailable.")
+
+        session_state = session_store.create_session(
+            working_dir=self.working_dir,
+            model=self.model,
+        )
+        session_state.interaction_log_path = None
+        session_store.save_session(session_state)
+        return self._activate_session(session_state)
+
+    def switch_to_session(self, session_id: str) -> SessionState:
+        """Load a saved session and make it the active interactive context."""
+        session_store = getattr(self, "session_store", None)
+        if not isinstance(session_store, SessionStore):
+            raise RuntimeError("Session storage is unavailable.")
+        return self._activate_session(session_store.load_session(session_id))
+
+    def delete_session(self, session_id: str) -> None:
+        """Delete a saved session by id."""
+        session_store = getattr(self, "session_store", None)
+        if not isinstance(session_store, SessionStore):
+            raise RuntimeError("Session storage is unavailable.")
+        session_store.delete_session(session_id)
+
+    def _format_session_picker_label(self, session: SessionState) -> str:
+        """Build the one-line label shown in the interactive session picker."""
+        current_marker = " [current]" if session.session_id == self.session_id else ""
+        updated_at = session.updated_at.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+        return (
+            f"{session.display_name}{current_marker} | "
+            f"{session.session_id} | {updated_at} | {session.message_count} messages"
+        )
+
+    def manage_sessions_interactively(self) -> str:
+        """Open an interactive picker for switching or deleting saved sessions."""
+        sessions = self.list_saved_sessions()
+        if not sessions:
+            return "No saved sessions found."
+
+        radio_list = RadioList(
+            values=[
+                (session.session_id, self._format_session_picker_label(session))
+                for session in sessions
+            ],
+            default=self.session_id,
+            show_scrollbar=True,
+        )
+        result_message = {"value": "Session picker closed."}
+        footer_message = {
+            "value": "Use Up/Down to choose, Enter to use, D/Delete to remove, Esc/Q to close."
+        }
+        picker_style = Style.from_dict(
+            {
+                "session-picker-title": "bold",
+                "session-picker-subtitle": "ansibrightblack",
+                "session-picker-footer": "ansibrightblack",
+                "radio-selected": "reverse",
+                "radio-checked": "ansicyan",
+            }
+        )
+
+        def refresh_picker_values() -> None:
+            if not sessions:
+                return
+
+            radio_list.values = [
+                (session.session_id, self._format_session_picker_label(session))
+                for session in sessions
+            ]
+            radio_list._selected_index = min(radio_list._selected_index, len(radio_list.values) - 1)
+            session_ids = [session.session_id for session in sessions]
+            radio_list.current_value = (
+                self.session_id if self.session_id in session_ids else session_ids[0]
+            )
+
+        kb = KeyBindings()
+
+        @kb.add("enter", eager=True)
+        def _use_selected_session(event: Any) -> None:
+            session_id = radio_list.values[radio_list._selected_index][0]
+            if session_id == self.session_id:
+                result_message["value"] = f"Already using session `{session_id}`."
+            else:
+                session = self.switch_to_session(session_id)
+                result_message["value"] = (
+                    f"Switched to session {session.display_name} (`{session.session_id}`)."
+                )
+            event.app.exit(result=result_message["value"])
+
+        @kb.add("d", eager=True)
+        @kb.add("delete", eager=True)
+        def _delete_selected_session(event: Any) -> None:
+            selected_session = sessions[radio_list._selected_index]
+            if selected_session.session_id == self.session_id:
+                footer_message["value"] = (
+                    "Cannot delete the current session. Switch to another one first."
+                )
+                event.app.invalidate()
+                return
+
+            self.delete_session(selected_session.session_id)
+            sessions.pop(radio_list._selected_index)
+            result_message["value"] = (
+                f"Deleted session {selected_session.display_name} "
+                f"(`{selected_session.session_id}`)."
+            )
+            footer_message["value"] = result_message["value"]
+            refresh_picker_values()
+            event.app.invalidate()
+
+        @kb.add("escape", eager=True)
+        @kb.add("q", eager=True)
+        def _close_picker(event: Any) -> None:
+            event.app.exit(result=result_message["value"])
+
+        body = HSplit(
+            [
+                Window(
+                    FormattedTextControl(
+                        lambda: [
+                            ("class:session-picker-title", "Sessions\n"),
+                            (
+                                "class:session-picker-subtitle",
+                                (f"Current: {self.session_state.display_name} ({self.session_id})"),
+                            ),
+                        ]
+                    ),
+                    height=2,
+                    dont_extend_height=True,
+                ),
+                Frame(radio_list, title="Saved Sessions"),
+                Window(
+                    FormattedTextControl(
+                        lambda: [("class:session-picker-footer", footer_message["value"])]
+                    ),
+                    height=1,
+                    dont_extend_height=True,
+                ),
+            ]
+        )
+
+        application: Application[str] = Application(
+            layout=Layout(body, focused_element=radio_list),
+            key_bindings=kb,
+            full_screen=True,
+            mouse_support=False,
+            style=picker_style,
+        )
+        return application.run()
 
     def list_skills(self) -> SkillCatalog:
         """Return the currently discovered workspace skill catalog."""

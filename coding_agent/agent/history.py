@@ -6,6 +6,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 from secrets import token_hex
+from typing import Any, cast
 
 from pydantic import ValidationError
 
@@ -13,6 +14,13 @@ from coding_agent.agent.state import SessionState
 from coding_agent.config import Settings
 
 _SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+class _UnsetType:
+    """Sentinel for optional session updates."""
+
+
+_SESSION_FIELD_UNSET = _UnsetType()
 
 
 class SessionStoreError(RuntimeError):
@@ -90,6 +98,39 @@ class SessionStore:
         except ValidationError as exc:
             raise SessionStoreError(f"Session `{session_id}` is invalid: {exc}") from exc
 
+    def update_session_metadata(
+        self,
+        session_id: str,
+        *,
+        name: str | None | _UnsetType = _SESSION_FIELD_UNSET,
+    ) -> SessionState:
+        """Update mutable session metadata in a safe load-modify-save cycle."""
+        session = self.load_session(session_id)
+
+        if name is _SESSION_FIELD_UNSET:
+            raise ValueError("At least one session field must be provided.")
+
+        session.name = self._normalize_session_name(cast(str | None, name))
+        self.save_session(session)
+        return session
+
+    def rename_session(self, session_id: str, name: str) -> SessionState:
+        """Rename a saved session."""
+        return self.update_session_metadata(session_id, name=name)
+
+    def clear_session_name(self, session_id: str) -> SessionState:
+        """Clear the explicit session name and fall back to prompt-derived naming."""
+        return self.update_session_metadata(session_id, name=None)
+
+    def delete_session(self, session_id: str) -> Path:
+        """Delete a previously saved session by id."""
+        path = self.session_path(session_id)
+        if not path.is_file():
+            raise SessionNotFoundError(f"Session `{session_id}` was not found.")
+
+        path.unlink()
+        return path
+
     def list_sessions(self) -> list[SessionState]:
         """Return all saved sessions, newest first."""
         if not self.sessions_dir.exists():
@@ -103,6 +144,14 @@ class SessionStore:
                 raise SessionStoreError(f"Session file `{path}` is invalid: {exc}") from exc
 
         return sorted(sessions, key=lambda session: session.updated_at, reverse=True)
+
+    def export_session_json(self, session_id: str) -> dict[str, Any]:
+        """Export a saved session in a JSON-friendly structure."""
+        return self.load_session(session_id).to_json_export()
+
+    def export_session_markdown(self, session_id: str) -> str:
+        """Export a saved session as a Markdown transcript."""
+        return self.load_session(session_id).to_markdown_export()
 
     def session_path(self, session_id: str) -> Path:
         """Return the on-disk path for a session id."""
@@ -121,3 +170,13 @@ class SessionStore:
                 "Session ids may only contain letters, numbers, dots, underscores, and dashes."
             )
         return normalized_id
+
+    def _normalize_session_name(self, name: str | None) -> str | None:
+        """Normalize explicit session names before persisting them."""
+        if name is None:
+            return None
+
+        normalized = " ".join(name.split())
+        if not normalized:
+            raise ValueError("Session name cannot be empty.")
+        return normalized

@@ -6,6 +6,7 @@ from pathlib import Path
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
+from coding_agent.agent.history import SessionStore
 from coding_agent.agent.slash_commands import (
     SlashCommandContext,
     create_default_slash_command_registry,
@@ -81,7 +82,7 @@ def test_mcp_slash_command_updates_in_memory_json_override(tmp_path: Path) -> No
 
 
 def test_mcp_slash_command_lists_current_servers(tmp_path: Path) -> None:
-    """`/mcp` should show the current effective configuration and usage."""
+    """`/mcp` should show the current effective configuration only."""
 
     app_settings = Settings(
         _env_file=None,
@@ -104,7 +105,7 @@ def test_mcp_slash_command_lists_current_servers(tmp_path: Path) -> None:
     assert "# MCP Configuration" in result.output
     assert "Configured servers: 1" in result.output
     assert "`docs`: `streamable-http` -> `https://example.com/mcp`" in result.output
-    assert "Usage:" in result.output
+    assert "Usage:" not in result.output
 
 
 def test_slash_completer_suggests_top_level_commands() -> None:
@@ -119,12 +120,21 @@ def test_slash_completer_suggests_top_level_commands() -> None:
         )
     )
 
-    assert [completion.display_text for completion in completions] == ["/mcp", "/skills"]
+    assert [completion.display_text for completion in completions] == [
+        "/mcp",
+        "/new",
+        "/sessions",
+        "/skills",
+    ]
     assert (
         completions[0].display_meta_text
         == "Inspect, add, remove, and reload MCP server configuration."
     )
-    assert completions[1].display_meta_text == "Inspect and rescan installed workspace skills."
+    assert (
+        completions[1].display_meta_text == "Start a fresh saved session in the current workspace."
+    )
+    assert completions[2].display_meta_text == "Open the interactive session picker."
+    assert completions[3].display_meta_text == "Inspect and rescan installed workspace skills."
 
 
 def test_slash_completer_suggests_mcp_subcommands() -> None:
@@ -179,6 +189,85 @@ def test_skills_slash_command_lists_current_skills(tmp_path: Path) -> None:
     assert "# Skills" in result.output
     assert "Discovered skills: 1" in result.output
     assert "`Reviewer`" in result.output
+    assert "Usage:" not in result.output
+
+
+def test_new_slash_command_starts_a_fresh_saved_session(tmp_path: Path) -> None:
+    """`/new` should rotate the interactive session id immediately."""
+
+    store = SessionStore(Settings(_env_file=None), sessions_dir=tmp_path / "sessions")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    current_session = store.create_session(working_dir=workspace, model="gpt-4o-mini")
+    state = {"session": current_session}
+
+    def start_new_session():
+        state["session"] = store.create_session(working_dir=workspace, model="gpt-4o-mini")
+        return state["session"]
+
+    result = create_default_slash_command_registry().execute(
+        "/new",
+        ctx=SlashCommandContext(
+            working_dir=workspace,
+            settings=Settings(_env_file=None),
+            reload_mcp_tools=lambda: [],
+            list_skills=_empty_skill_catalog,
+            reload_skills=_empty_skill_catalog,
+            current_session=lambda: state["session"],
+            list_sessions=store.list_sessions,
+            start_new_session=start_new_session,
+        ),
+    )
+
+    assert result is not None
+    assert "# New Session" in result.output
+    assert state["session"].session_id in result.output
+    assert "Resume later with:" not in result.output
+
+
+def test_sessions_slash_command_opens_the_interactive_manager(tmp_path: Path) -> None:
+    """`/sessions` should delegate to the interactive session manager."""
+
+    store = SessionStore(Settings(_env_file=None), sessions_dir=tmp_path / "sessions")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    current_session = store.create_session(working_dir=workspace, model="gpt-4o-mini")
+    current_session.history.extend(
+        [
+            {"role": "user", "content": "current work"},
+            {"role": "assistant", "content": "done"},
+            {"role": "user", "content": "follow-up details"},
+        ]
+    )
+    store.save_session(current_session)
+    older_session = store.create_session(working_dir=workspace, model="gpt-4o-mini")
+    older_session.history.append({"role": "user", "content": "older work"})
+    store.save_session(older_session)
+
+    seen_calls: list[str] = []
+
+    def manage_sessions() -> str:
+        seen_calls.append("opened")
+        return "Switched to session current work"
+
+    result = create_default_slash_command_registry().execute(
+        "/sessions",
+        ctx=SlashCommandContext(
+            working_dir=workspace,
+            settings=Settings(_env_file=None),
+            reload_mcp_tools=lambda: [],
+            list_skills=_empty_skill_catalog,
+            reload_skills=_empty_skill_catalog,
+            current_session=lambda: current_session,
+            list_sessions=store.list_sessions,
+            start_new_session=lambda: current_session,
+            manage_sessions=manage_sessions,
+        ),
+    )
+
+    assert result is not None
+    assert result.output == "Switched to session current work"
+    assert seen_calls == ["opened"]
 
 
 def test_slash_completer_suggests_skills_subcommands() -> None:
@@ -194,3 +283,37 @@ def test_slash_completer_suggests_skills_subcommands() -> None:
     )
 
     assert [completion.text for completion in completions] == ["list", "help", "reload"]
+
+
+def test_slash_completer_suggests_sessions_subcommands() -> None:
+    """Typing `/sessions ` should show candidate `/sessions` actions."""
+
+    completions = (
+        create_default_slash_command_registry()
+        .build_completer()
+        .get_completions(
+            Document(text="/sessions ", cursor_position=10),
+            CompleteEvent(completion_requested=False),
+        )
+    )
+
+    assert [completion.text for completion in completions] == ["list", "current", "help"]
+
+
+def test_sessions_list_subcommand_opens_the_interactive_manager(tmp_path: Path) -> None:
+    """`/sessions list` should keep using the interactive picker."""
+
+    result = create_default_slash_command_registry().execute(
+        "/sessions list",
+        ctx=SlashCommandContext(
+            working_dir=tmp_path,
+            settings=Settings(_env_file=None),
+            reload_mcp_tools=lambda: [],
+            list_skills=_empty_skill_catalog,
+            reload_skills=_empty_skill_catalog,
+            manage_sessions=lambda: "picker opened",
+        ),
+    )
+
+    assert result is not None
+    assert result.output == "picker opened"

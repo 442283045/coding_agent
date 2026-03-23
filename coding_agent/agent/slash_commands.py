@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from prompt_toolkit.completion import CompleteEvent, Completer, Completion
 from prompt_toolkit.document import Document
 from pydantic import ValidationError
 
+from coding_agent.agent.state import SessionState
 from coding_agent.config import MCPServerConfig, Settings
 from coding_agent.skills import SkillCatalog
 
@@ -24,6 +26,10 @@ class SlashCommandContext:
     reload_mcp_tools: Callable[[], list[str]]
     list_skills: Callable[[], SkillCatalog]
     reload_skills: Callable[[], SkillCatalog]
+    current_session: Callable[[], SessionState | None] | None = None
+    list_sessions: Callable[[], list[SessionState]] | None = None
+    start_new_session: Callable[[], SessionState] | None = None
+    manage_sessions: Callable[[], str] | None = None
 
 
 @dataclass(slots=True)
@@ -195,6 +201,13 @@ def create_default_slash_command_registry() -> SlashCommandRegistry:
     registry = SlashCommandRegistry()
     registry.register(
         SlashCommand(
+            name="new",
+            description="Start a fresh saved session in the current workspace.",
+            handler=_handle_new_command,
+        )
+    )
+    registry.register(
+        SlashCommand(
             name="mcp",
             description="Inspect, add, remove, and reload MCP server configuration.",
             handler=_handle_mcp_command,
@@ -206,6 +219,18 @@ def create_default_slash_command_registry() -> SlashCommandRegistry:
                 SlashCommandOption("remove", "Remove a configured MCP server."),
                 SlashCommandOption("rm", "Alias for `remove`."),
                 SlashCommandOption("reload", "Reload MCP tools for this session."),
+            ),
+        )
+    )
+    registry.register(
+        SlashCommand(
+            name="sessions",
+            description="Open the interactive session picker.",
+            handler=_handle_sessions_command,
+            subcommands=(
+                SlashCommandOption("list", "Open the interactive session picker."),
+                SlashCommandOption("current", "Show the current session."),
+                SlashCommandOption("help", "Show `/sessions` usage."),
             ),
         )
     )
@@ -247,6 +272,39 @@ def _handle_mcp_command(ctx: SlashCommandContext, arguments: str) -> SlashComman
             raise SlashCommandError(f"Unknown `/mcp` action `{action}`.\n\n{_render_mcp_help(ctx)}")
 
 
+def _handle_new_command(ctx: SlashCommandContext, arguments: str) -> SlashCommandResult:
+    """Handle the /new slash command."""
+    if arguments:
+        raise SlashCommandError("Usage: `/new`")
+
+    if ctx.start_new_session is None:
+        raise SlashCommandError("Creating a new session is unavailable in this context.")
+
+    session = ctx.start_new_session()
+    return SlashCommandResult(_render_new_session(session))
+
+
+def _handle_sessions_command(ctx: SlashCommandContext, arguments: str) -> SlashCommandResult:
+    """Handle the /sessions slash command."""
+    if not arguments:
+        return SlashCommandResult(_manage_sessions(ctx))
+
+    action, _, remainder = arguments.partition(" ")
+    _ = remainder
+
+    match action.lower():
+        case "list":
+            return SlashCommandResult(_manage_sessions(ctx))
+        case "current":
+            return SlashCommandResult(_render_current_session(ctx))
+        case "help":
+            return SlashCommandResult(_render_sessions_help())
+        case _:
+            raise SlashCommandError(
+                f"Unknown `/sessions` action `{action}`.\n\n{_render_sessions_help()}"
+            )
+
+
 def _handle_skills_command(ctx: SlashCommandContext, arguments: str) -> SlashCommandResult:
     """Handle the /skills slash command."""
     if not arguments:
@@ -268,8 +326,90 @@ def _handle_skills_command(ctx: SlashCommandContext, arguments: str) -> SlashCom
             )
 
 
+def _render_new_session(session: SessionState) -> str:
+    """Render the success output for `/new`."""
+    return "\n".join(
+        [
+            "# New Session",
+            "",
+            f"Name: {session.display_name}",
+            f"Current session: `{session.session_id}`",
+            f"Workspace: `{session.working_dir}`",
+            f"Model: `{session.model}`",
+        ]
+    )
+
+
+def _render_sessions_overview(ctx: SlashCommandContext) -> str:
+    """Render saved sessions plus the currently active session."""
+    current_session = _require_current_session(ctx)
+    saved_sessions = _require_list_sessions(ctx)()
+
+    lines = [
+        "# Sessions",
+        "",
+        f"Current session: {current_session.display_name} (`{current_session.session_id}`)",
+        f"Current workspace: `{current_session.working_dir}`",
+        f"Saved sessions: {len(saved_sessions)}",
+    ]
+
+    if saved_sessions:
+        for session in saved_sessions:
+            current_marker = (
+                " (current)" if session.session_id == current_session.session_id else ""
+            )
+            lines.append(
+                f"- {session.display_name}{current_marker} | "
+                f"`{session.session_id}` | "
+                f"{_format_session_timestamp(session.updated_at)} | "
+                f"{session.message_count} messages"
+            )
+    else:
+        lines.append("No saved sessions were found.")
+
+    return "\n".join(lines)
+
+
+def _manage_sessions(ctx: SlashCommandContext) -> str:
+    """Open the interactive session manager or raise a user-facing error."""
+    if ctx.manage_sessions is None:
+        raise SlashCommandError("Interactive session management is unavailable in this context.")
+    return ctx.manage_sessions()
+
+
+def _render_current_session(ctx: SlashCommandContext) -> str:
+    """Render details for the active interactive session."""
+    session = _require_current_session(ctx)
+    lines = [
+        "# Current Session",
+        "",
+        f"- Name: {session.display_name}",
+        f"- Session: `{session.session_id}`",
+        f"- Workspace: `{session.working_dir}`",
+        f"- Model: `{session.model}`",
+        f"- Messages: `{session.message_count}`",
+        f"- Updated: `{_format_session_timestamp(session.updated_at)}`",
+    ]
+    if session.last_user_message:
+        lines.append(f"- Last user message: {session.last_user_message}")
+    return "\n".join(lines)
+
+
+def _render_sessions_help() -> str:
+    """Render /sessions usage instructions."""
+    return "\n".join(
+        [
+            "Usage:",
+            "- `/sessions`",
+            "- `/sessions list`",
+            "- `/sessions current`",
+            "- `/new`",
+        ]
+    )
+
+
 def _render_mcp_overview(ctx: SlashCommandContext) -> str:
-    """Render the current effective MCP configuration and command help."""
+    """Render the current effective MCP configuration."""
     servers = ctx.settings.load_mcp_servers()
     lines = [
         "# MCP Configuration",
@@ -285,7 +425,6 @@ def _render_mcp_overview(ctx: SlashCommandContext) -> str:
     else:
         lines.extend(["", "No MCP servers are configured yet."])
 
-    lines.extend(["", _render_mcp_help(ctx)])
     return "\n".join(lines)
 
 
@@ -368,8 +507,8 @@ def _reload_mcp_servers(ctx: SlashCommandContext) -> str:
 
 
 def _render_skills_overview(skill_catalog: SkillCatalog, working_dir: Path) -> str:
-    """Render the current discovered skill set and command help."""
-    return "\n".join([skill_catalog.format_markdown(working_dir), "", _render_skills_help()])
+    """Render the current discovered skill set."""
+    return skill_catalog.format_markdown(working_dir)
 
 
 def _render_skills_help() -> str:
@@ -397,6 +536,30 @@ def _reload_skills(ctx: SlashCommandContext) -> str:
 
     skill_list = ", ".join(f"`{skill.name}`" for skill in skill_catalog.skills)
     return f"Reloaded workspace skills. Discovered {skill_count} skill(s): {skill_list}"
+
+
+def _require_current_session(ctx: SlashCommandContext) -> SessionState:
+    """Return the current session or raise a user-facing error."""
+    if ctx.current_session is None:
+        raise SlashCommandError("Current session details are unavailable in this context.")
+
+    session = ctx.current_session()
+    if session is None:
+        raise SlashCommandError("Current session details are unavailable in this context.")
+
+    return session
+
+
+def _require_list_sessions(ctx: SlashCommandContext) -> Callable[[], list[SessionState]]:
+    """Return the saved-session listing callback or raise a user-facing error."""
+    if ctx.list_sessions is None:
+        raise SlashCommandError("Saved session listing is unavailable in this context.")
+    return ctx.list_sessions
+
+
+def _format_session_timestamp(value: datetime) -> str:
+    """Render a compact timestamp for slash-command session output."""
+    return value.astimezone().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _reload_current_session(ctx: SlashCommandContext) -> str:

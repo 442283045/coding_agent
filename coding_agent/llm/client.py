@@ -42,6 +42,14 @@ class _LLMInteractionLogger:
         self.log_path.touch(exist_ok=True)
         self._file_header_written = self.log_path.stat().st_size > 0
 
+    def clear_log_path(self) -> None:
+        """Reset the current run so a later session can write to a new file."""
+        self.log_path = None
+        self._entry_index = 1
+        self._console_header_printed = False
+        self._file_header_written = False
+        self._run_started_at = datetime.now().astimezone()
+
     def log_request(self, payload: Mapping[str, Any]) -> None:
         """Print a formatted request log entry."""
         self._log_entry("REQUEST", "LLM Request:", payload)
@@ -160,6 +168,10 @@ class LLMClient:
     def set_log_path(self, log_path: Path) -> None:
         """Persist future LLM interaction logs to a file."""
         self._logger.set_log_path(log_path)
+
+    def clear_log_path(self) -> None:
+        """Stop writing to the current log file until a new session file is set."""
+        self._logger.clear_log_path()
 
     def _get_tools_format(self) -> list[dict[str, Any]]:
         """Get tools in the appropriate format for the model."""

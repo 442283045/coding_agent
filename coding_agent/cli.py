@@ -1,5 +1,6 @@
 """CLI entry point using Typer."""
 
+import json
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated
@@ -14,6 +15,7 @@ from rich.text import Text
 from coding_agent.agent.core import Agent
 from coding_agent.agent.history import SessionNotFoundError, SessionStore
 from coding_agent.config import settings
+from coding_agent.doctor import build_doctor_report
 
 app = typer.Typer(
     help="AI-powered CLI coding agent",
@@ -88,7 +90,7 @@ RunPathOption = Annotated[
     ),
 ]
 ModelOption = Annotated[
-    str,
+    str | None,
     typer.Option("--model", "-m", help="LLM model to use"),
 ]
 DebugOption = Annotated[
@@ -98,6 +100,32 @@ DebugOption = Annotated[
 SessionIdArgument = Annotated[
     str,
     typer.Argument(help="Saved session id"),
+]
+SessionNameArgument = Annotated[
+    str | None,
+    typer.Argument(help="New explicit session name. Quote it when it contains spaces."),
+]
+ExportFormatOption = Annotated[
+    str,
+    typer.Option("--format", "-f", help="Export format: markdown or json."),
+]
+ExportOutputOption = Annotated[
+    Path | None,
+    typer.Option(
+        "--output",
+        "-o",
+        help="Write the export to a file instead of stdout.",
+        file_okay=True,
+        dir_okay=False,
+        resolve_path=True,
+    ),
+]
+ClearNameOption = Annotated[
+    bool,
+    typer.Option(
+        "--clear",
+        help="Clear the explicit session name and fall back to the first user message.",
+    ),
 ]
 
 
@@ -131,7 +159,7 @@ def _validate_resume_inputs(
 def _create_agent(
     *,
     working_dir: Path | None,
-    model: str,
+    model: str | None,
     debug: bool,
     resume_session_id: str | None,
 ) -> Agent:
@@ -144,11 +172,22 @@ def _create_agent(
     )
 
 
+def _resolve_requested_model(
+    *,
+    model: str | None,
+    resume_session_id: str | None,
+) -> str | None:
+    """Preserve the saved model on resume unless the user overrides it explicitly."""
+    if resume_session_id is not None:
+        return model
+    return model or DEFAULT_MODEL
+
+
 def _run_interactive_session(
     *,
     working_dir: Path | None,
     workspace_display: Path | None,
-    model: str,
+    model: str | None,
     debug: bool,
     resume_session_id: str | None = None,
 ) -> None:
@@ -224,7 +263,7 @@ def main(
             workspace_display=(
                 None if resume is not None else _get_workspace_display(workspace=workspace)
             ),
-            model=DEFAULT_MODEL,
+            model=_resolve_requested_model(model=None, resume_session_id=resume),
             debug=DEFAULT_DEBUG,
             resume_session_id=resume,
         )
@@ -235,7 +274,7 @@ def chat(
     path: ChatPathArgument = None,
     workspace: WorkspaceOption = None,
     resume: ResumeOption = None,
-    model: ModelOption = DEFAULT_MODEL,
+    model: ModelOption = None,
     debug: DebugOption = DEFAULT_DEBUG,
 ) -> None:
     """Start an interactive coding session."""
@@ -248,7 +287,7 @@ def chat(
         workspace_display=(
             None if resume is not None else _get_workspace_display(path=path, workspace=workspace)
         ),
-        model=model,
+        model=_resolve_requested_model(model=model, resume_session_id=resume),
         debug=debug,
         resume_session_id=resume,
     )
@@ -259,7 +298,7 @@ def run(
     prompt: RunPromptArgument,
     path: RunPathOption = None,
     resume: ResumeOption = None,
-    model: ModelOption = DEFAULT_MODEL,
+    model: ModelOption = None,
     debug: DebugOption = DEFAULT_DEBUG,
 ) -> None:
     """Execute a single task and exit."""
@@ -268,7 +307,7 @@ def run(
         working_dir = None if resume is not None else _resolve_working_dir(path=path)
         agent = _create_agent(
             working_dir=working_dir,
-            model=model,
+            model=_resolve_requested_model(model=model, resume_session_id=resume),
             debug=debug,
             resume_session_id=resume,
         )
@@ -311,6 +350,49 @@ def config() -> None:
     console.print(table)
 
 
+def _format_doctor_status(status: str) -> str:
+    """Render a doctor status label with Rich styling."""
+    match status:
+        case "ok":
+            return "[green]OK[/green]"
+        case "warn":
+            return "[yellow]WARN[/yellow]"
+        case _:
+            return "[red]FAIL[/red]"
+
+
+@app.command()
+def doctor(workspace: WorkspaceOption = None) -> None:
+    """Run environment self-checks for the current workspace."""
+    working_dir = _resolve_working_dir(workspace=workspace)
+    report = build_doctor_report(settings, working_dir=working_dir)
+
+    overall_status = "FAIL" if report.has_failures else "WARN" if report.has_warnings else "OK"
+    console.print(
+        f"[bold blue]Coding Agent Doctor[/bold blue] {overall_status} "
+        f"[dim]({report.working_dir})[/dim]"
+    )
+
+    table = Table()
+    table.add_column("Check", style="cyan")
+    table.add_column("Status", style="white", no_wrap=True)
+    table.add_column("Summary", style="white", overflow="fold")
+    table.add_column("Detail", style="dim", overflow="fold")
+
+    for check in report.checks:
+        table.add_row(
+            check.label,
+            _format_doctor_status(check.status),
+            check.summary,
+            check.detail or "",
+        )
+
+    console.print(table)
+
+    if report.has_failures:
+        raise typer.Exit(1)
+
+
 def _get_session_store() -> SessionStore:
     """Create the default session store used by CLI commands."""
     return SessionStore(settings)
@@ -321,6 +403,29 @@ def _format_session_timestamp(value: object) -> str:
     if isinstance(value, datetime):
         return value.astimezone().strftime("%Y-%m-%d %H:%M:%S")
     return str(value)
+
+
+def _build_session_export_content(
+    *,
+    session_id: str,
+    format_name: str,
+    store: SessionStore,
+) -> str:
+    """Render a saved session in the requested export format."""
+    match format_name.strip().lower():
+        case "markdown" | "md":
+            return store.export_session_markdown(session_id)
+        case "json":
+            return (
+                json.dumps(
+                    store.export_session_json(session_id),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n"
+            )
+        case _:
+            raise typer.BadParameter("Export format must be one of: markdown, md, json.")
 
 
 @sessions_app.command("list")
@@ -334,21 +439,21 @@ def list_sessions() -> None:
         return
 
     table = Table(title="Saved Sessions")
+    table.add_column("Name", style="white", overflow="fold")
     table.add_column("Session", style="cyan")
     table.add_column("Updated", style="green")
     table.add_column("Messages", justify="right")
     table.add_column("Model", style="magenta")
     table.add_column("Workspace", overflow="fold")
-    table.add_column("Last User Message", overflow="fold")
 
     for session in sessions:
         table.add_row(
+            session.display_name,
             session.session_id,
             _format_session_timestamp(session.updated_at),
             str(session.message_count),
             session.model,
             str(session.working_dir),
-            session.last_user_message or "",
         )
 
     console.print(table)
@@ -367,6 +472,7 @@ def show_session(session_id: SessionIdArgument) -> None:
     lines = [
         f"# Session `{session.session_id}`",
         "",
+        f"- Name: {session.display_name}",
         f"- Workspace: `{session.working_dir}`",
         f"- Model: `{session.model}`",
         f"- Created: `{_format_session_timestamp(session.created_at)}`",
@@ -374,8 +480,12 @@ def show_session(session_id: SessionIdArgument) -> None:
         f"- Messages: `{session.message_count}`",
     ]
 
+    if session.name is not None:
+        lines.append(f"- Explicit name: `{session.name}`")
     if session.interaction_log_path is not None:
         lines.append(f"- LLM log: `{session.interaction_log_path}`")
+    if session.first_user_message:
+        lines.append(f"- First user message: {session.first_user_message}")
     if session.last_user_message:
         lines.append(f"- Last user message: {session.last_user_message}")
 
@@ -388,6 +498,73 @@ def show_session(session_id: SessionIdArgument) -> None:
     )
 
     console.print(Markdown("\n".join(lines)))
+
+
+@sessions_app.command("rename")
+def rename_session(
+    session_id: SessionIdArgument,
+    name: SessionNameArgument = None,
+    clear: ClearNameOption = False,
+) -> None:
+    """Set or clear an explicit saved-session name."""
+    if clear and name is not None:
+        raise typer.BadParameter("Use either a name argument or --clear, not both.")
+    if not clear and name is None:
+        raise typer.BadParameter("Provide a new name or use --clear.")
+
+    store = _get_session_store()
+    try:
+        session = (
+            store.clear_session_name(session_id)
+            if clear
+            else store.rename_session(session_id, name or "")
+        )
+    except SessionNotFoundError as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1) from e
+    except ValueError as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1) from e
+
+    action = "Cleared explicit session name" if clear else "Renamed session"
+    console.print(
+        Markdown(
+            "\n".join(
+                [
+                    f"{action} `{session.session_id}`.",
+                    "",
+                    f"- Name: {session.display_name}",
+                ]
+            )
+        )
+    )
+
+
+@sessions_app.command("export")
+def export_session(
+    session_id: SessionIdArgument,
+    format_name: ExportFormatOption = "markdown",
+    output: ExportOutputOption = None,
+) -> None:
+    """Export one saved session as Markdown or JSON."""
+    store = _get_session_store()
+    try:
+        exported = _build_session_export_content(
+            session_id=session_id,
+            format_name=format_name,
+            store=store,
+        )
+    except SessionNotFoundError as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1) from e
+
+    if output is not None:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(exported, encoding="utf-8")
+        console.print(f"[green]Exported session to {output.resolve()}[/green]")
+        return
+
+    console.print(exported, markup=False, highlight=False, soft_wrap=True)
 
 
 if __name__ == "__main__":

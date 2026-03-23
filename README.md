@@ -11,7 +11,8 @@
 - 📝 提供带安全检查的文件读写/补丁能力，并支持对大型生成文件进行分块追加
 - 🧩 提供精确文本替换、冲突检测和文件变更 diff 预览，降低编辑失败概率
 - 🔒 原生 Shell 命令执行，并根据操作系统提供相应提示
-- 💾 会话历史管理
+- 💾 会话历史管理，支持重命名与 Markdown/JSON 导出
+- 🩺 提供 `doctor` 环境自检，快速定位模型凭证、MCP 配置和工作区问题
 
 ## 安装
 
@@ -122,12 +123,21 @@ coding-agent chat --resume <session-id>
 ```bash
 coding-agent sessions list
 coding-agent sessions show <session-id>
+coding-agent sessions rename <session-id> "Bug triage"
+coding-agent sessions export <session-id> --format markdown
+coding-agent sessions export <session-id> --format json --output session.json
 coding-agent run --resume <session-id> "继续这个会话"
 ```
+
+`coding-agent sessions show <session-id>` 现在会显示会话名和直接可复制的恢复命令。
+`coding-agent sessions rename` 可以为重要会话设置显式名称，避免列表里只显示第一句 prompt。
+`coding-agent sessions export` 支持导出 Markdown 或 JSON transcript，便于分享、归档或接入自动化。
 
 交互模式还支持本地斜杠命令：
 
 ```bash
+/new
+/sessions
 /mcp
 /mcp add filesystem {"command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","."]}
 /mcp remove filesystem
@@ -137,6 +147,8 @@ coding-agent run --resume <session-id> "继续这个会话"
 ```
 
 在交互模式中输入 `/` 会自动显示可用的斜杠命令候选项。
+`/new` 会在当前工作区立即创建一个新的已保存 session，并切换到新的 session id。
+`/sessions` 会打开交互式 session 选择器，可用上下方向键移动，按回车切换到选中的 session，并可用 `d` 或 `Delete` 删除选中的非当前 session。
 `/mcp` 会显示当前生效的 MCP 配置，将基于文件的变更持久化到当前使用的
 `mcp.json`，并立即将 MCP 工具重新加载到当前会话中。
 当配置了 MCP 服务器时，启动时还会输出初始化是否成功，以及有哪些 MCP 工具可用。
@@ -152,6 +164,8 @@ coding-agent run --resume <session-id> "继续这个会话"
 coding-agent run "解释代码库结构"
 coding-agent run -w /path/to/project "解释代码库结构"
 coding-agent run --resume <session-id> "继续之前的会话"
+coding-agent doctor
+coding-agent doctor -w /path/to/project
 ```
 
 ### 可用命令
@@ -160,6 +174,7 @@ coding-agent run --resume <session-id> "继续之前的会话"
 coding-agent --help
 coding-agent chat --help
 coding-agent run --help
+coding-agent doctor --help
 coding-agent sessions --help
 ```
 
