@@ -21,11 +21,13 @@ from rich.status import Status
 from rich.syntax import Syntax
 from rich.text import Text
 
+from coding_agent.agent.history import SessionStore
 from coding_agent.agent.slash_commands import (
     SlashCommandContext,
     SlashCommandResult,
     create_default_slash_command_registry,
 )
+from coding_agent.agent.state import SessionState
 from coding_agent.config import settings
 from coding_agent.llm.client import LLMClient
 from coding_agent.mcp import MCPManager
@@ -48,17 +50,27 @@ class Agent:
 
     def __init__(
         self,
-        working_dir: str,
+        working_dir: str | None,
         model: str | None = None,
         debug: bool = False,
+        resume_session_id: str | None = None,
+        session_store: SessionStore | None = None,
     ):
-        self.working_dir = Path(working_dir).resolve()
-        self.model = model or settings.default_model
         self.debug = debug
-        self.history: list[dict[str, Any]] = []
         self._interaction_log_path: Path | None = None
         self._async_runner: object | None = None
         self._loading_depth = 0
+        self.session_store = session_store or SessionStore(settings)
+        self.session_state = self._init_session_state(
+            working_dir=working_dir,
+            model=model,
+            resume_session_id=resume_session_id,
+        )
+        self.session_id = self.session_state.session_id
+        self.working_dir = self.session_state.working_dir.resolve()
+        self.model = self.session_state.model
+        self.history: list[dict[str, Any]] = self.session_state.history
+        self._interaction_log_path = self.session_state.interaction_log_path
         self.registry: ToolRegistry = ToolRegistry()
         self.mcp_manager = MCPManager(settings.load_mcp_servers())
         self.shell_profile = detect_shell_profile()
@@ -75,6 +87,8 @@ class Agent:
         # Initialize tools
         self._init_tools()
         self.llm = LLMClient(model=self.model, debug=debug, tool_registry=self.registry)
+        if self._interaction_log_path is not None:
+            self.llm.set_log_path(self._interaction_log_path)
 
         # Setup prompt session with history
         settings.ensure_config_dir()
@@ -85,6 +99,55 @@ class Agent:
             completer=self.slash_commands.build_completer(),
             complete_while_typing=True,
         )
+
+    def _init_session_state(
+        self,
+        *,
+        working_dir: str | None,
+        model: str | None,
+        resume_session_id: str | None,
+    ) -> SessionState:
+        """Create a new session or load an existing one."""
+        if resume_session_id is not None:
+            session_state = self.session_store.load_session(resume_session_id)
+
+            if working_dir is not None:
+                requested_dir = Path(working_dir).resolve()
+                if requested_dir != session_state.working_dir.resolve():
+                    raise ValueError("Resumed sessions must use their saved working directory.")
+
+            if model is not None and model != session_state.model:
+                session_state.model = model
+                self.session_store.save_session(session_state)
+
+            return session_state
+
+        if working_dir is None:
+            raise ValueError("working_dir is required when creating a new session.")
+
+        return self.session_store.create_session(
+            working_dir=Path(working_dir).resolve(),
+            model=model or settings.default_model,
+        )
+
+    def _save_session_state(self) -> Path | None:
+        """Persist the current in-memory session snapshot."""
+        session_state = getattr(self, "session_state", None)
+        session_store = getattr(self, "session_store", None)
+        if not isinstance(session_state, SessionState) or not isinstance(
+            session_store, SessionStore
+        ):
+            return None
+
+        session_state.working_dir = self.working_dir
+        session_state.model = self.model
+        session_state.interaction_log_path = self._interaction_log_path
+        return session_store.save_session(session_state)
+
+    def _append_history_message(self, message: dict[str, Any]) -> None:
+        """Append a conversation message and persist it immediately."""
+        self.history.append(message)
+        self._save_session_state()
 
     def _build_base_registry(self) -> ToolRegistry:
         """Build a fresh registry containing only the built-in local tools."""
@@ -389,6 +452,7 @@ class Agent:
 
         self._interaction_log_path = log_path
         self.llm.set_log_path(log_path)
+        self._save_session_state()
 
         console.print(f"[dim]LLM log file: {log_path}[/dim]")
         return log_path
@@ -490,7 +554,7 @@ class Agent:
     def _process_message(self, user_input: str) -> None:
         """Process a single user message through the ReAct loop."""
         self._ensure_interaction_log_file()
-        self.history.append({"role": "user", "content": user_input})
+        self._append_history_message({"role": "user", "content": user_input})
 
         max_iterations = settings.max_iterations
 
@@ -627,7 +691,7 @@ class Agent:
                         for tc in tool_calls
                     ]
 
-                self.history.append(assistant_message)
+                self._append_history_message(assistant_message)
 
                 # Execute tools
                 for tool_call in tool_calls:
@@ -635,7 +699,7 @@ class Agent:
 
                     # Add tool response
                     if "claude" in self.model.lower():
-                        self.history.append(
+                        self._append_history_message(
                             {
                                 "role": "user",
                                 "content": [
@@ -648,7 +712,7 @@ class Agent:
                             }
                         )
                     else:
-                        self.history.append(
+                        self._append_history_message(
                             {
                                 "role": "tool",
                                 "tool_call_id": tool_call["id"],
@@ -659,7 +723,7 @@ class Agent:
                 # No tool calls - display the response
                 if not stream_state["started"]:
                     self._display_response(content)
-                self.history.append(
+                self._append_history_message(
                     {
                         "role": "assistant",
                         "content": content,
@@ -769,7 +833,8 @@ class Agent:
             if slash_result is not None:
                 return slash_result.output
 
-            self.history.append({"role": "user", "content": prompt})
+            self._ensure_interaction_log_file()
+            self._append_history_message({"role": "user", "content": prompt})
 
             with self._loading_status("Thinking..."):
                 response = self._run_async(self.llm.chat_with_tools(self._build_messages()))
@@ -804,11 +869,11 @@ class Agent:
                 }
                 if isinstance(reasoning_content, str) and reasoning_content:
                     assistant_message["reasoning_content"] = reasoning_content
-                self.history.append(assistant_message)
+                self._append_history_message(assistant_message)
 
                 for tool_call in tool_calls:
                     result = self._execute_tool(tool_call, finish_reason=finish_reason)
-                    self.history.append(
+                    self._append_history_message(
                         {
                             "role": "tool",
                             "tool_call_id": tool_call["id"],
@@ -828,7 +893,7 @@ class Agent:
             final_message: dict[str, Any] = {"role": "assistant", "content": content}
             if isinstance(reasoning_content, str) and reasoning_content:
                 final_message["reasoning_content"] = reasoning_content
-            self.history.append(final_message)
+            self._append_history_message(final_message)
             return content
         finally:
             self.close()

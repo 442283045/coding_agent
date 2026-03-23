@@ -100,9 +100,13 @@ coding-agent chat -m gpt-4o
 
 # 打印详细的 LLM 请求/响应日志
 coding-agent chat --debug
+
+# 恢复已有会话
+coding-agent chat --resume <session-id>
 ```
 
-提交第一条交互消息后，代理会为当前会话创建一个独立的 LLM 日志文件，并输出其绝对路径。
+启动交互模式时，代理会创建一个可恢复的 session，并在横幅中显示 session id。
+提交第一条交互消息后，代理会为当前 session 创建一个独立的 LLM 日志文件，并输出其绝对路径。
 交互响应默认以流式方式输出。
 启动横幅会显示 `Workspace`，并在提供 `-w/--workspace` 时保留其值。
 工具调用在运行时会显示在控制台中。
@@ -112,6 +116,14 @@ coding-agent chat --debug
 代理在等待模型输出首个流式内容时，也会显示 `Thinking...` 加载状态。
 当模型流式返回 `reasoning_content` 时，CLI 会在主回答之前及其过程中，以浅灰色预览文本显示这部分内容。
 回答会以 Markdown 形式渲染在 CLI 中。
+
+已保存的 session 会写入 `~/.config/coding-agent/sessions/`。可以通过以下命令管理：
+
+```bash
+coding-agent sessions list
+coding-agent sessions show <session-id>
+coding-agent run --resume <session-id> "继续这个会话"
+```
 
 交互模式还支持本地斜杠命令：
 
@@ -139,6 +151,7 @@ coding-agent chat --debug
 ```bash
 coding-agent run "解释代码库结构"
 coding-agent run -w /path/to/project "解释代码库结构"
+coding-agent run --resume <session-id> "继续之前的会话"
 ```
 
 ### 可用命令
@@ -147,6 +160,7 @@ coding-agent run -w /path/to/project "解释代码库结构"
 coding-agent --help
 coding-agent chat --help
 coding-agent run --help
+coding-agent sessions --help
 ```
 
 ## 路线图
